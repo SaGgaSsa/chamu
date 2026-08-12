@@ -370,7 +370,7 @@ export function OnboardingFlow({
 
       <footer className="app-footer">
         <span>Sin cuentas · Sin telemetría · Sin nube</span>
-        <span>v0.1.0</span>
+        <span>v0.1.1</span>
       </footer>
     </main>
   );
