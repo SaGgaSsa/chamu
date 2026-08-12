@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64 NSIS
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            artifact_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*
+          - name: Linux x86_64 AppImage and deb
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+            artifact_glob: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*
+
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            wget
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Check tag and application versions
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          node -e 'const fs = require("fs"); const expected = process.argv[1]; const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")); const cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8"); const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1]; for (const [file, version] of [["package.json", pkg.version], ["src-tauri/tauri.conf.json", tauri.version], ["src-tauri/Cargo.toml", cargoVersion]]) { if (version !== expected) throw new Error(`${file} version ${version} no coincide con ${expected}`); }' "$tag_version"
+
+      - name: Refuse an unsigned release
+        shell: bash
+        run: |
+          test -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || {
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for tagged releases."
+            exit 1
+          }
+          test -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" || {
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required for tagged releases."
+            exit 1
+          }
+          test -n "${TAURI_UPDATER_PUBLIC_KEY:-}" || {
+            echo "::error::TAURI_UPDATER_PUBLIC_KEY is required for tagged releases."
+            exit 1
+          }
+
+      - name: Write signed release configuration
+        shell: bash
+        run: |
+          node -e 'const fs = require("fs"); fs.writeFileSync("release.tauri.conf.json", JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.env.TAURI_UPDATER_PUBLIC_KEY } } }));'
+
+      - name: Build signed bundles
+        shell: bash
+        run: npm run tauri -- build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --ci --config release.tauri.conf.json
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: chamu-${{ matrix.target }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create updater manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: SaGgaSsa/chamu
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const root = "release-artifacts";
+          const files = fs.readdirSync(root);
+          const platforms = {};
+          const releaseUrl = (name) => `https://github.com/${process.env.RELEASE_REPOSITORY}/releases/download/${process.env.RELEASE_TAG}/${encodeURIComponent(name)}`;
+
+          for (const signatureName of files.filter((name) => name.endsWith(".sig"))) {
+            const artifactName = signatureName.slice(0, -4);
+            if (!files.includes(artifactName)) continue;
+
+            let platform;
+            if (/nsis|windows|setup/i.test(artifactName)) platform = "windows-x86_64";
+            if (/AppImage/i.test(artifactName)) platform = "linux-x86_64";
+            if (!platform || platforms[platform]) continue;
+
+            platforms[platform] = {
+              signature: fs.readFileSync(path.join(root, signatureName), "utf8").trim(),
+              url: releaseUrl(artifactName),
+            };
+          }
+
+          if (Object.keys(platforms).length === 0) {
+            throw new Error("No se encontraron pares de artefacto y firma para latest.json");
+          }
+
+          const manifest = {
+            version: process.env.RELEASE_TAG.replace(/^v/, ""),
+            notes: "Consulta las notas de la release en GitHub.",
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+          fs.writeFileSync(path.join(root, "latest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+
+      - name: Publish tagged release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-artifacts/**/*

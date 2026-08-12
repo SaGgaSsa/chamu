@@ -1,0 +1,26 @@
+[package]
+name = "chamu"
+version = "0.1.0"
+description = "Privacidad primero, dictado local para escritorio"
+authors = ["Chamu contributors"]
+edition = "2021"
+
+[lib]
+name = "chamu_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.15"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+whisper-rs = "0.16"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
