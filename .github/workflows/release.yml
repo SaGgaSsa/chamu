@@ -171,4 +171,11 @@ jobs:
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: release-artifacts/**/*
+          files: |
+            release-artifacts/Chamu_*.exe
+            release-artifacts/Chamu_*.exe.sig
+            release-artifacts/Chamu_*.AppImage
+            release-artifacts/Chamu_*.AppImage.sig
+            release-artifacts/Chamu_*.deb
+            release-artifacts/Chamu_*.deb.sig
+            release-artifacts/latest.json
