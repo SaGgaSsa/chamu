@@ -37,6 +37,13 @@ describe('Chamu visual tokens', () => {
     expect(styles).toMatch(/--surface-glass\s*:\s*color-mix\(in srgb, var\(--color-surface-container\)\s+40%,\s*transparent\)\s*;/i);
   });
 
+  it('styles ShortcutField with dark surface and accessible state tokens', () => {
+    expect(cssBlock('\\.shortcut-field')).toMatch(/background:\s*var\(--color-surface-container-low\)\s*;/i);
+    expect(cssBlock('\\.shortcut-field__capture')).toMatch(/color:\s*var\(--color-on-surface\)\s*;/i);
+    expect(styles).toMatch(/\.shortcut-field__capture:hover:not\(:disabled\)[^{]*\{[^}]*border-color:\s*var\(--border-active\)\s*;/i);
+    expect(cssBlock('\\.shortcut-field__error')).toMatch(/color:\s*var\(--color-status-error\)\s*;/i);
+  });
+
   it('uses the documented 1200 pixel page container maximum', () => {
     expect(styles).toMatch(/width:\s*min\(100%,\s*1200px\)\s*;/i);
     expect(styles).not.toMatch(/1232px/i);
