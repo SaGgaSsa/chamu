@@ -11,6 +11,7 @@ import {
   type ModelStatus,
 } from "../native/commands";
 import { PrivacyBadge } from "./PrivacyBadge";
+import { ShortcutField } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
 import { DictationControl } from "./DictationControl";
 
@@ -380,6 +381,11 @@ export function AppShell({
               <span><strong>Pulsar para alternar</strong><small>Una pulsación empieza y otra termina</small></span>
             </label>
           </fieldset>
+          <ShortcutField
+            value={draftSettings.shortcut}
+            onChange={(shortcut) => setDraftSettings((current) => ({ ...current, shortcut }))}
+            onError={(message) => setSettingsError(message ?? null)}
+          />
           {settingsError && <p className="error-message">{settingsError}</p>}
           <div className="settings-panel__actions">
             <button className="secondary-button" onClick={() => setSettingsOpen(false)} type="button">Cancelar</button>

@@ -1,13 +1,14 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
 import {
   type ChamuBridge,
-  type ModelStatus,
-  type MicrophoneCheck,
-  type ShortcutCheck,
   type ClipboardCheck,
   type HistoryEntry,
+  type MicrophoneCheck,
+  type ModelDownloadProgress,
+  type ModelStatus,
+  type ShortcutCheck,
 } from "../native/commands";
 import { OnboardingFlow } from "./OnboardingFlow";
 
@@ -20,17 +21,18 @@ function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
     sizeMiB: 142,
   };
   const microphone: MicrophoneCheck = { ok: true, message: "Micrófono disponible" };
-  const shortcut: ShortcutCheck = { ok: true, captured: "Ctrl+Super" };
+  const shortcut: ShortcutCheck = { ok: true, captured: DEFAULT_SETTINGS.shortcut };
   const clipboard: ClipboardCheck = { ok: true, message: "Portapapeles disponible" };
 
   return {
     loadSettings: vi.fn(async () => DEFAULT_SETTINGS),
     saveSettings: vi.fn(async (_settings: AppSettings) => undefined),
     inspectModel: vi.fn(async () => model),
-    downloadModel: vi.fn(async () => model),
+    startModelDownload: vi.fn(async () => undefined),
+    onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(async () => undefined),
     testMicrophone: vi.fn(async () => microphone),
-    testShortcut: vi.fn(async (shortcutValue: string) => ({ ...shortcut, captured: shortcutValue })),
+    testShortcut: vi.fn(async () => shortcut),
     testClipboard: vi.fn(async () => clipboard),
     testPaste: vi.fn(async () => clipboard),
     loadHistory: vi.fn(async () => [] as HistoryEntry[]),
@@ -45,149 +47,113 @@ function continueStep() {
 }
 
 describe("OnboardingFlow", () => {
-  it("explains local privacy and lets the person choose Spanish or English", () => {
-    const onComplete = vi.fn();
-    render(<OnboardingFlow bridge={makeBridge()} onComplete={onComplete} />);
+  it("shows model and language choices with a short local privacy note on the first screen", async () => {
+    render(<OnboardingFlow bridge={makeBridge()} onComplete={vi.fn()} />);
 
-    expect(screen.getByRole("heading", { name: /configura chamu/i })).toBeVisible();
-    expect(screen.getByText(/^sin cuentas\./i)).toBeVisible();
-    expect(screen.getByText(/audio se procesa.*descarta/i)).toBeVisible();
-
-    continueStep();
-
-    expect(screen.getByRole("heading", { name: /idioma/i })).toBeVisible();
+    expect(screen.getAllByText(/sin cuentas.*sin telemetría.*sin nube/i)).not.toHaveLength(0);
+    expect(screen.getByRole("heading", { name: /prepara el modelo/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /español/i })).toBeChecked();
     fireEvent.click(screen.getByRole("radio", { name: /english/i }));
     expect(screen.getByRole("radio", { name: /english/i })).toBeChecked();
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
   });
 
-  it("requires explicit consent before downloading a missing model and can cancel it", async () => {
-    const modelMissing: ModelStatus = {
+  it("subscribes before a confirmed download and renders progress", async () => {
+    const missing: ModelStatus = {
       id: "base",
       name: "Whisper base multilingüe",
       installed: false,
       checksumValid: false,
       sizeMiB: 142,
     };
+    let progressListener: ((progress: ModelDownloadProgress) => void) | undefined;
+    const callOrder: string[] = [];
     const bridge = makeBridge({
-      inspectModel: vi.fn(async () => modelMissing),
-      downloadModel: vi.fn(() => new Promise<ModelStatus>(() => undefined)),
+      inspectModel: vi.fn(async () => missing),
+      onModelDownloadProgress: vi.fn(async (listener) => {
+        callOrder.push("listen");
+        progressListener = listener;
+        return () => undefined;
+      }),
+      startModelDownload: vi.fn(async () => { callOrder.push("start"); }),
     });
     render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
 
-    continueStep();
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /modelo/i })).toBeVisible());
-    expect(screen.getByText(/no se encontró/i)).toBeVisible();
-    expect(bridge.downloadModel).not.toHaveBeenCalled();
-
+    await waitFor(() => expect(screen.getByRole("button", { name: /descargar modelo/i })).toBeVisible());
     fireEvent.click(screen.getByRole("button", { name: /descargar modelo/i }));
-    expect(screen.getByText(/confirmas descargar/i)).toBeVisible();
-    expect(screen.getByText(/no se conecta a ningún servicio de transcripción/i)).toBeVisible();
-    expect(bridge.downloadModel).not.toHaveBeenCalled();
-
     fireEvent.click(screen.getByRole("button", { name: /confirmar descarga/i }));
-    await waitFor(() => expect(bridge.downloadModel).toHaveBeenCalledWith("base"));
 
+    await waitFor(() => expect(bridge.onModelDownloadProgress).toHaveBeenCalledOnce());
+    await waitFor(() => expect(bridge.startModelDownload).toHaveBeenCalledWith("base"));
+    expect(callOrder).toEqual(["listen", "start"]);
+
+    await act(async () => {
+      progressListener?.({
+        modelId: "base",
+        phase: "downloading",
+        downloadedBytes: 71,
+        totalBytes: 142,
+        percent: 50,
+        message: "Descargando modelo",
+      });
+    });
+
+    expect(await screen.findByText(/descargando modelo.*50%/i)).toBeVisible();
+  });
+
+  it("allows cancelling a model download and shows the cancellation message", async () => {
+    const missing: ModelStatus = {
+      id: "base",
+      name: "Whisper base multilingüe",
+      installed: false,
+      checksumValid: false,
+      sizeMiB: 142,
+    };
+    let progressListener: ((progress: ModelDownloadProgress) => void) | undefined;
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async () => missing),
+      onModelDownloadProgress: vi.fn(async (listener) => {
+        progressListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /descargar modelo/i })).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: /descargar modelo/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirmar descarga/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /cancelar descarga/i })).toBeVisible());
     fireEvent.click(screen.getByRole("button", { name: /cancelar descarga/i }));
     await waitFor(() => expect(bridge.cancelModelDownload).toHaveBeenCalledWith("base"));
-  });
 
-  it("unblocks onboarding when a confirmed download returns a validated model", async () => {
-    const modelMissing: ModelStatus = {
-      id: "base",
-      name: "Whisper base multilingüe",
-      installed: false,
-      checksumValid: false,
-      sizeMiB: 142,
-    };
-    const modelReady: ModelStatus = {
-      ...modelMissing,
-      installed: true,
-      checksumValid: true,
-      progress: 100,
-    };
-    const bridge = makeBridge({
-      inspectModel: vi.fn(async () => modelMissing),
-      downloadModel: vi.fn(async () => modelReady),
+    await act(async () => {
+      progressListener?.({
+        modelId: "base",
+        phase: "cancelled",
+        downloadedBytes: 0,
+        message: "Descarga cancelada",
+      });
     });
-    render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
-
-    continueStep();
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /modelo/i })).toBeVisible());
-    fireEvent.click(screen.getByRole("button", { name: /descargar modelo/i }));
-    fireEvent.click(screen.getByRole("button", { name: /confirmar descarga/i }));
-    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
-    expect(screen.getByRole("button", { name: /continuar/i })).toBeEnabled();
-
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /micrófono/i })).toBeVisible());
+    expect((await screen.findAllByText(/descarga cancelada/i))[0]).toBeVisible();
   });
 
-  it("checks microphone, forces an alternative after a failed shortcut, and checks paste", async () => {
-    const shortcutProbe = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false, captured: "Ctrl+Super", message: "No se pudo capturar" })
-      .mockResolvedValueOnce({ ok: true, captured: "Ctrl+Space", message: "Atajo capturado" });
-    const bridge = makeBridge({
-      testShortcut: shortcutProbe,
-    });
-    render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
-
-    continueStep();
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /modelo/i })).toBeVisible());
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /micrófono/i })).toBeVisible());
-
-    fireEvent.click(screen.getByRole("button", { name: /probar micrófono/i }));
-    await waitFor(() => expect(screen.getByText(/micrófono listo/i)).toBeVisible());
-    continueStep();
-
-    await waitFor(() => expect(screen.getByRole("heading", { name: /atajo/i })).toBeVisible());
-    expect(screen.getByText(/^ctrl \+ super$/i)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /probar atajo ctrl \+ super/i }));
-    await waitFor(() => expect(screen.getByText(/elige y prueba una alternativa/i)).toBeVisible());
-    expect(screen.getByRole("button", { name: /ctrl \+ space/i })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /ctrl \+ space/i }));
-    await waitFor(() => expect(screen.getByText(/atajo listo/i)).toBeVisible());
-    continueStep();
-
-    await waitFor(() => expect(screen.getByRole("heading", { name: /portapapeles/i })).toBeVisible());
-    fireEvent.click(screen.getByRole("button", { name: /probar portapapeles y pegado/i }));
-    await waitFor(() => expect(screen.getByText(/portapapeles y pegado listos/i)).toBeVisible());
-    expect(bridge.testClipboard).toHaveBeenCalledOnce();
-    expect(bridge.testPaste).toHaveBeenCalledOnce();
-  });
-
-  it("offers hold and toggle recording modes before finishing onboarding", async () => {
+  it("moves to the second screen after a validated model and saves without optional tests", async () => {
     const bridge = makeBridge();
     const onComplete = vi.fn();
     render(<OnboardingFlow bridge={bridge} onComplete={onComplete} />);
 
-    continueStep();
-    fireEvent.click(screen.getByRole("radio", { name: /english/i }));
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /modelo/i })).toBeVisible());
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /micrófono/i })).toBeVisible());
-    fireEvent.click(screen.getByRole("button", { name: /probar micrófono/i }));
-    await waitFor(() => expect(screen.getByText(/micrófono listo/i)).toBeVisible());
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /atajo/i })).toBeVisible());
-    fireEvent.click(screen.getByRole("button", { name: /probar atajo/i }));
-    await waitFor(() => expect(screen.getByText(/atajo listo/i)).toBeVisible());
-    continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /portapapeles/i })).toBeVisible());
-    fireEvent.click(screen.getByRole("button", { name: /probar portapapeles y pegado/i }));
-    await waitFor(() => expect(screen.getByText(/portapapeles y pegado listos/i)).toBeVisible());
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
     continueStep();
 
-    expect(screen.getByRole("heading", { name: /modo de dictado/i })).toBeVisible();
-    fireEvent.click(screen.getByRole("radio", { name: /alternar/i }));
+    expect(screen.getByRole("heading", { name: /atajo y modo/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /probar atajo/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /probar micrófono/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /probar pegado/i })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("radio", { name: /pulsar para alternar/i }));
     continueStep();
-    await waitFor(() => expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ language: "en", mode: "toggle" })));
-    expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ language: "en", mode: "toggle" }));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" })));
+    expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" }));
   });
 });
