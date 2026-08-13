@@ -54,6 +54,10 @@ export type PlatformSession = "windows" | "x11" | "wayland" | "unknown";
 
 export interface PlatformDiagnosis {
   session: PlatformSession;
+  shortcutMethod: string;
+  holdModeSupported: boolean;
+  toggleModeSupported: boolean;
+  waylandPortalAvailable?: boolean;
 }
 
 export type WaylandHoldShortcutStatus = "registered" | "pressed" | "released" | "error";
@@ -61,6 +65,19 @@ export type WaylandHoldShortcutStatus = "registered" | "pressed" | "released" | 
 export interface WaylandHoldShortcutEvent {
   status: WaylandHoldShortcutStatus;
   message?: string;
+  triggerDescription?: string;
+}
+
+export interface WaylandShortcutConfigurationOptions {
+  requestConfiguration?: boolean;
+}
+
+export function shouldRequestWaylandShortcutConfiguration(
+  previousShortcut: string | undefined,
+  nextShortcut: string,
+  hasRegisteredAssignment: boolean,
+): boolean {
+  return hasRegisteredAssignment && previousShortcut !== undefined && previousShortcut !== nextShortcut;
 }
 
 export interface ShortcutCheck {
@@ -125,7 +142,10 @@ export interface ChamuBridge {
   stopDictation?: () => Promise<DictationResult | void>;
   /** Optional to keep browser/test bridges source-compatible; nativeBridge provides all portal methods. */
   diagnosePlatform?: () => Promise<PlatformDiagnosis>;
-  configureWaylandHoldShortcut?: (shortcut: string) => Promise<void>;
+  configureWaylandHoldShortcut?: (
+    shortcut: string,
+    options?: WaylandShortcutConfigurationOptions,
+  ) => Promise<void>;
   clearWaylandHoldShortcut?: () => Promise<void>;
   onWaylandHoldShortcut?: (
     listener: (event: WaylandHoldShortcutEvent) => void,
@@ -223,8 +243,14 @@ export function diagnosePlatform(): Promise<PlatformDiagnosis> {
   return invoke<PlatformDiagnosis>("diagnose_platform");
 }
 
-export function configureWaylandHoldShortcut(shortcut: string): Promise<void> {
-  return invoke("configure_wayland_hold_shortcut", { shortcut });
+export function configureWaylandHoldShortcut(
+  shortcut: string,
+  options?: WaylandShortcutConfigurationOptions,
+): Promise<void> {
+  return invoke("configure_wayland_hold_shortcut", {
+    shortcut,
+    requestConfiguration: options?.requestConfiguration ?? false,
+  });
 }
 
 export function clearWaylandHoldShortcut(): Promise<void> {

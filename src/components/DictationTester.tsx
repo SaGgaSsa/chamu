@@ -195,5 +195,7 @@ function formatWaylandShortcutStatus(event: WaylandHoldShortcutEvent): string {
     pressed: "presionado",
     released: "soltado",
   };
-  return `Atajo Wayland: ${labels[event.status]}`;
+  const trigger = event.triggerDescription ? ` (${event.triggerDescription})` : "";
+  const message = event.message ? ` — ${event.message}` : "";
+  return `Atajo Wayland: ${labels[event.status]}${trigger}${message}`;
 }

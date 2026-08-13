@@ -7,6 +7,7 @@ import {
   type ChamuBridge,
   type PlatformDiagnosis,
   type WaylandHoldShortcutEvent,
+  shouldRequestWaylandShortcutConfiguration,
 } from "../native/commands";
 import { PrivacyBadge } from "./PrivacyBadge";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
@@ -17,6 +18,7 @@ interface AppShellProps {
   recordingState?: RecordingState;
   settings?: AppSettings;
   bridge?: ChamuBridge;
+  settingsReady?: boolean;
   onRestartOnboarding?: () => void;
 }
 
@@ -24,6 +26,7 @@ export function AppShell({
   recordingState,
   settings = DEFAULT_SETTINGS,
   bridge,
+  settingsReady = true,
   onRestartOnboarding,
 }: AppShellProps) {
   const activeBridge = bridge ?? nativeBridge;
@@ -56,6 +59,11 @@ export function AppShell({
   const dictationActionPendingRef = useRef(dictationActionPending);
   const dictationStartingRef = useRef(dictationStarting);
   const waylandReleasePendingRef = useRef(false);
+  const waylandDictationOwnedRef = useRef(false);
+  const waylandStopStartedRef = useRef(false);
+  const waylandRegisteredShortcutRef = useRef<string | undefined>(undefined);
+  const waylandTriggerDescriptionRef = useRef<string | undefined>(undefined);
+  const globalShortcutCleanupRef = useRef<Promise<void>>(Promise.resolve());
   const shortcutGenerationRef = useRef(0);
 
   function createShortcutGeneration(): number {
@@ -98,6 +106,11 @@ export function AppShell({
   }, [settings]);
 
   useEffect(() => {
+    if (!settingsReady) {
+      setPlatformDiagnosis(undefined);
+      setPlatformDiagnosisReady(false);
+      return;
+    }
     const diagnosisGeneration = createShortcutGeneration();
     let cancelled = false;
     setPlatformDiagnosis(undefined);
@@ -128,7 +141,7 @@ export function AppShell({
       cancelled = true;
       invalidateShortcutGeneration(diagnosisGeneration);
     };
-  }, [activeBridge]);
+  }, [activeBridge, settingsReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,6 +209,38 @@ export function AppShell({
     await startDictation();
   }
 
+  function startWaylandDictation() {
+    if (
+      waylandDictationOwnedRef.current
+      || dictationActionPendingRef.current
+      || dictationStartingRef.current
+      || currentRecordingStateRef.current.status === "recording"
+      || currentRecordingStateRef.current.status === "transcribing"
+    ) return;
+
+    waylandDictationOwnedRef.current = true;
+    waylandStopStartedRef.current = false;
+    waylandReleasePendingRef.current = false;
+    testerRef.current?.prepareForDictation();
+    void startDictation();
+  }
+
+  function stopWaylandDictationIfOwned() {
+    if (!waylandDictationOwnedRef.current || waylandStopStartedRef.current) return;
+    if (dictationStartingRef.current) {
+      waylandReleasePendingRef.current = true;
+      return;
+    }
+    if (
+      currentRecordingStateRef.current.status !== "recording"
+      || dictationActionPendingRef.current
+    ) return;
+
+    waylandStopStartedRef.current = true;
+    waylandDictationOwnedRef.current = false;
+    void stopDictation();
+  }
+
   shortcutHandlerRef.current = (state) => {
     if (state === "Pressed") {
       if (currentSettings.mode === "toggle" || currentRecordingStateRef.current.status !== "recording") {
@@ -211,21 +256,15 @@ export function AppShell({
   function handleWaylandShortcutEvent(event: WaylandHoldShortcutEvent) {
     setWaylandShortcutStatus(event);
     if (event.status === "pressed") {
-      waylandReleasePendingRef.current = false;
-      void handleDictation();
+      startWaylandDictation();
       return;
     }
-    if (event.status !== "released") return;
-
-    if (dictationStartingRef.current) {
-      waylandReleasePendingRef.current = true;
+    if (event.status === "released") {
+      stopWaylandDictationIfOwned();
       return;
     }
-    if (
-      currentRecordingStateRef.current.status === "recording"
-      && !dictationActionPendingRef.current
-    ) {
-      void stopDictation();
+    if (event.status === "error") {
+      stopWaylandDictationIfOwned();
     }
   }
 
@@ -240,7 +279,7 @@ export function AppShell({
     const onWaylandHoldShortcut = activeBridge.onWaylandHoldShortcut;
     const configureWaylandHoldShortcut = activeBridge.configureWaylandHoldShortcut;
     const clearWaylandHoldShortcut = activeBridge.clearWaylandHoldShortcut;
-    if (!platformDiagnosisReady || !useWaylandHoldPortal || shortcutCaptureActive) {
+    if (!settingsReady || !platformDiagnosisReady || !useWaylandHoldPortal || shortcutCaptureActive) {
       if (!useWaylandHoldPortal || shortcutCaptureActive) setWaylandShortcutStatus(undefined);
       return;
     }
@@ -259,7 +298,14 @@ export function AppShell({
     let disposed = false;
     let listenerRemoved = false;
     let unlisten: (() => void) | undefined;
+    let cleanupRetryCount = 0;
+    let cleanupRetryTimer: ReturnType<typeof setTimeout> | undefined;
     const shortcut = currentSettings.shortcut;
+    const requestConfiguration = shouldRequestWaylandShortcutConfiguration(
+      waylandRegisteredShortcutRef.current,
+      shortcut,
+      waylandTriggerDescriptionRef.current !== undefined,
+    );
 
     function removeListener() {
       if (listenerRemoved || !unlisten) return;
@@ -267,23 +313,60 @@ export function AppShell({
       unlisten();
     }
 
+    function isCleanupPendingMessage(message: string | undefined): boolean {
+      const normalized = message?.toLocaleLowerCase() ?? "";
+      return normalized.includes("limpieza") && normalized.includes("pendiente");
+    }
+
+    function schedulePendingCleanupRetry(message: string | undefined) {
+      if (disposed || !isCleanupPendingMessage(message) || cleanupRetryCount >= 2) return;
+
+      cleanupRetryCount += 1;
+      cleanupRetryTimer = setTimeout(() => {
+        cleanupRetryTimer = undefined;
+        if (disposed || !isCurrentShortcutGeneration(generation)) return;
+        const retry = requestConfiguration
+          ? configurePortalShortcut(shortcut, { requestConfiguration: true })
+          : configurePortalShortcut(shortcut);
+        void retry.catch(() => undefined);
+      }, cleanupRetryCount * 600);
+    }
+
+    function retryPendingCleanup(event: WaylandHoldShortcutEvent) {
+      if (event.status !== "error") return;
+      schedulePendingCleanupRetry(event.message);
+    }
+
     async function configurePortal() {
       try {
         unlisten = await subscribeToWaylandShortcut((event) => {
           if (!isCurrentShortcutGeneration(generation)) return;
+          if (event.status === "registered") {
+            cleanupRetryCount = 0;
+            waylandRegisteredShortcutRef.current = shortcut;
+            waylandTriggerDescriptionRef.current = event.triggerDescription;
+          }
+          retryPendingCleanup(event);
           waylandShortcutHandlerRef.current(event);
         });
         if (disposed) {
           removeListener();
           return;
         }
-        await configurePortalShortcut(shortcut);
+        if (requestConfiguration) {
+          await configurePortalShortcut(shortcut, { requestConfiguration: true });
+        } else {
+          await configurePortalShortcut(shortcut);
+        }
       } catch (error: unknown) {
         if (!disposed && isCurrentShortcutGeneration(generation)) {
+          const message = getErrorMessage(error, "No se pudo registrar el atajo Wayland");
           setWaylandShortcutStatus({
             status: "error",
-            message: getErrorMessage(error, "No se pudo registrar el atajo Wayland"),
+            message,
           });
+          schedulePendingCleanupRetry(message);
+          stopWaylandDictationIfOwned();
         }
       }
     }
@@ -293,7 +376,8 @@ export function AppShell({
     return () => {
       disposed = true;
       invalidateShortcutGeneration(generation);
-      waylandReleasePendingRef.current = false;
+      stopWaylandDictationIfOwned();
+      if (cleanupRetryTimer !== undefined) clearTimeout(cleanupRetryTimer);
       removeListener();
       void configuration.then(removeListener).catch(() => undefined);
       void clearPortalShortcut().catch(() => undefined);
@@ -303,6 +387,7 @@ export function AppShell({
     currentSettings.mode,
     currentSettings.shortcut,
     platformDiagnosisReady,
+    settingsReady,
     shortcutCaptureActive,
     useWaylandHoldPortal,
   ]);
@@ -322,6 +407,7 @@ export function AppShell({
     let registered = false;
     let unregisterStarted = false;
     let unregisterShortcut: ((shortcut: string) => Promise<void>) | undefined;
+    const previousCleanup = globalShortcutCleanupRef.current;
 
     async function unregisterIfRegistered() {
       if (!registered || unregisterStarted || !unregisterShortcut) return;
@@ -333,7 +419,7 @@ export function AppShell({
       }
     }
 
-    const registration = import("@tauri-apps/plugin-global-shortcut").then(async ({ register, unregister }) => {
+    const registration = previousCleanup.then(() => import("@tauri-apps/plugin-global-shortcut")).then(async ({ register, unregister }) => {
       unregisterShortcut = unregister;
       if (disposed) return;
 
@@ -359,12 +445,15 @@ export function AppShell({
       }
     });
 
+    const cleanup = registration.then(() => unregisterIfRegistered()).catch(() => undefined);
+    globalShortcutCleanupRef.current = cleanup;
+
     return () => {
       disposed = true;
       invalidateShortcutGeneration(generation);
-      void registration.then(() => unregisterIfRegistered()).catch(() => undefined);
+      globalShortcutCleanupRef.current = cleanup;
     };
-  }, [currentSettings.mode, currentSettings.shortcut, platformDiagnosisReady, shortcutCaptureActive, useWaylandHoldPortal]);
+  }, [currentSettings.shortcut, platformDiagnosisReady, shortcutCaptureActive, useWaylandHoldPortal]);
 
   async function startDictation() {
     updateDictationStarting(true);
@@ -377,18 +466,25 @@ export function AppShell({
       const result = await activeBridge.startDictation();
       applyDictationResult(result, "recording");
       started = !result || result.status === "recording";
+      if (!started) waylandDictationOwnedRef.current = false;
     } catch (error: unknown) {
       updateRecordingState({ status: "error", message: getErrorMessage(error, "No se pudo iniciar el dictado") });
+      waylandDictationOwnedRef.current = false;
     } finally {
       const releasePending = waylandReleasePendingRef.current;
       waylandReleasePendingRef.current = false;
       updateDictationStarting(false);
       updateDictationActionPending(false);
-      if (releasePending && started) void stopDictation();
+      if (releasePending && started && waylandDictationOwnedRef.current) {
+        waylandStopStartedRef.current = true;
+        waylandDictationOwnedRef.current = false;
+        void stopDictation();
+      }
     }
   }
 
   async function stopDictation() {
+    waylandDictationOwnedRef.current = false;
     updateRecordingState({ status: "transcribing" });
     updateDictationActionPending(true);
     try {

@@ -28,7 +28,7 @@ use core::{
     finalize_model_download, load_diagnostics, load_settings_file, model_catalog, now_unix_millis,
     save_settings_file, validate_model_checksum, validate_settings, AppSettings, DiagnosticRecord,
     DownloadController, HistoryEntry, HistoryStore, LocalModel, ModelValidation,
-    PlatformDiagnosis, RecordingLifecycle, RecordingPhase,
+    PlatformDiagnosis, PlatformSession, RecordingLifecycle, RecordingPhase,
 };
 use audio_capture::CaptureSessionHandle;
 
@@ -1004,8 +1004,25 @@ fn cancel_model_download(
 }
 
 #[tauri::command]
-fn diagnose_platform() -> PlatformDiagnosis {
-    detect_platform()
+async fn diagnose_platform() -> PlatformDiagnosis {
+    let mut diagnosis = detect_platform();
+    if diagnosis.session == PlatformSession::Wayland {
+        let available = wayland_shortcut::probe_portal().await.is_ok();
+        diagnosis.wayland_portal_available = Some(available);
+        diagnosis.shortcut_method = if available {
+            "xdg-global-shortcuts-portal".into()
+        } else {
+            "xdg-global-shortcuts-portal (no disponible)".into()
+        };
+        diagnosis.hold_mode_supported = available;
+        diagnosis.dependencies.push(core::DependencyCheck {
+            name: "Portal XDG GlobalShortcuts".into(),
+            available,
+            required: false,
+            install_hint: None,
+        });
+    }
+    diagnosis
 }
 
 #[tauri::command]

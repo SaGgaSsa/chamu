@@ -794,6 +794,8 @@ pub struct PlatformDiagnosis {
     pub paste_available: bool,
     pub hold_mode_supported: bool,
     pub toggle_mode_supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wayland_portal_available: Option<bool>,
     pub dependencies: Vec<DependencyCheck>,
 }
 
@@ -908,6 +910,17 @@ pub fn diagnose_platform_with<F>(
 where
     F: Fn(&str) -> bool,
 {
+    diagnose_platform_with_portal(environment, command_exists, None)
+}
+
+pub fn diagnose_platform_with_portal<F>(
+    environment: PlatformEnvironment<'_>,
+    command_exists: F,
+    wayland_portal_available: Option<bool>,
+) -> PlatformDiagnosis
+where
+    F: Fn(&str) -> bool,
+{
     let session = detect_session(environment);
     let compositor = detect_compositor(environment.current_desktop);
     let mut dependencies = Vec::new();
@@ -981,10 +994,11 @@ where
     let (shortcut_method, hold_mode_supported, toggle_mode_supported) = match session {
         PlatformSession::Windows => ("windows-global-hook".into(), true, true),
         PlatformSession::X11 => ("x11-global-hook".into(), true, true),
-        PlatformSession::Wayland if compositor != Compositor::Unknown => {
-            ("compositor-managed".into(), false, true)
-        }
-        PlatformSession::Wayland => ("wayland-assisted".into(), false, true),
+        PlatformSession::Wayland => match wayland_portal_available {
+            Some(true) => ("xdg-global-shortcuts-portal".into(), true, true),
+            Some(false) => ("xdg-global-shortcuts-portal (no disponible)".into(), false, true),
+            None => ("xdg-global-shortcuts-portal".into(), false, true),
+        },
         PlatformSession::Unknown => ("unavailable".into(), false, false),
     };
 
@@ -998,6 +1012,7 @@ where
         paste_available,
         hold_mode_supported,
         toggle_mode_supported,
+        wayland_portal_available,
         dependencies,
     }
 }
@@ -1250,6 +1265,26 @@ mod tests {
         assert!(!diagnosis.clipboard_available);
         assert!(!diagnosis.paste_available);
         assert!(!diagnosis.hold_mode_supported);
+    }
+
+    #[test]
+    fn wayland_diagnosis_reports_portal_backend_only_when_probe_succeeds() {
+        let environment = PlatformEnvironment {
+            os: "linux",
+            session_type: Some("wayland"),
+            current_desktop: Some("GNOME"),
+            wayland_display: Some("wayland-0"),
+            x_display: None,
+        };
+        let available = diagnose_platform_with_portal(environment, |_command| false, Some(true));
+        assert_eq!(available.shortcut_method, "xdg-global-shortcuts-portal");
+        assert!(available.hold_mode_supported);
+        assert_eq!(available.wayland_portal_available, Some(true));
+
+        let unavailable = diagnose_platform_with_portal(environment, |_command| false, Some(false));
+        assert_eq!(unavailable.shortcut_method, "xdg-global-shortcuts-portal (no disponible)");
+        assert!(!unavailable.hold_mode_supported);
+        assert_eq!(unavailable.wayland_portal_available, Some(false));
     }
 
     #[test]

@@ -188,4 +188,15 @@ describe("DictationTester", () => {
     );
     expect(screen.getByText(/Permiso rechazado/)).toBeVisible();
   });
+
+  it("shows the real trigger description returned by the portal", () => {
+    renderTester({
+      waylandShortcutStatus: {
+        status: "registered",
+        triggerDescription: "Ctrl+Alt+A",
+      },
+    });
+
+    expect(screen.getByText("Atajo Wayland: registrado (Ctrl+Alt+A)")).toBeVisible();
+  });
 });

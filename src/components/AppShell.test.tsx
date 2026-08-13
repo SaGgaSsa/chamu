@@ -41,7 +41,13 @@ function makeWaylandBridge() {
   const unlisten = vi.fn();
   const waylandListeners: Array<(event: WaylandHoldShortcutEvent) => void> = [];
   const bridge = makeBridge({
-    diagnosePlatform: vi.fn(async () => ({ session: "wayland" as const })),
+    diagnosePlatform: vi.fn(async () => ({
+      session: "wayland" as const,
+      shortcutMethod: "xdg-global-shortcuts-portal",
+      holdModeSupported: true,
+      toggleModeSupported: true,
+      waylandPortalAvailable: true,
+    })),
     configureWaylandHoldShortcut: vi.fn(async (_shortcut: string) => undefined),
     clearWaylandHoldShortcut: vi.fn(async () => undefined),
     onWaylandHoldShortcut: vi.fn(async (listener) => {
@@ -281,6 +287,64 @@ describe("AppShell", () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
+  it("does not toggle or stop a recording that Wayland did not start", async () => {
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: /comenzar dictado/i }));
+    await waitFor(() => expect(screen.getAllByRole("status")[0]).toHaveTextContent("Grabando"));
+
+    await emitWaylandShortcut({ status: "pressed" });
+    await emitWaylandShortcut({ status: "pressed" });
+    await emitWaylandShortcut({ status: "released" });
+
+    expect(bridge.startDictation).toHaveBeenCalledOnce();
+    expect(bridge.stopDictation).not.toHaveBeenCalled();
+  });
+
+  it("stops capture owned by Wayland when the portal session is cleaned up", async () => {
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    const { unmount } = render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalled());
+    await emitWaylandShortcut({ status: "pressed" });
+    await waitFor(() => expect(bridge.startDictation).toHaveBeenCalledOnce());
+    unmount();
+
+    await waitFor(() => expect(bridge.stopDictation).toHaveBeenCalledOnce());
+  });
+
+  it("stops Wayland-owned capture when the portal reports an error", async () => {
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalled());
+    await emitWaylandShortcut({ status: "pressed" });
+    await waitFor(() => expect(bridge.startDictation).toHaveBeenCalledOnce());
+    await emitWaylandShortcut({ status: "error", message: "El portal se cerró" });
+
+    await waitFor(() => expect(bridge.stopDictation).toHaveBeenCalledOnce());
+  });
+
+  it("keeps a Wayland stop pending when cleanup happens during capture start", async () => {
+    let resolveStart: ((result: DictationResult) => void) | undefined;
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    bridge.startDictation = vi.fn(() => new Promise<DictationResult>((resolve) => {
+      resolveStart = resolve;
+    }));
+    const { unmount } = render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalled());
+    await emitWaylandShortcut({ status: "pressed" });
+    await waitFor(() => expect(bridge.startDictation).toHaveBeenCalledOnce());
+    unmount();
+    expect(bridge.stopDictation).not.toHaveBeenCalled();
+
+    resolveStart?.({ status: "recording" });
+    await waitFor(() => expect(bridge.stopDictation).toHaveBeenCalledOnce());
+  });
+
   it("stops after a Wayland release that arrives while start is pending", async () => {
     let resolveStart: ((result: DictationResult) => void) | undefined;
     const { bridge, emitWaylandShortcut } = makeWaylandBridge();
@@ -310,8 +374,65 @@ describe("AppShell", () => {
     await emitWaylandShortcut({ status: "registered" });
     expect(screen.getByText("Atajo Wayland: registrado")).toBeVisible();
 
+    await emitWaylandShortcut({ status: "registered", triggerDescription: "Ctrl+Alt+A" });
+    expect(screen.getByText("Atajo Wayland: registrado (Ctrl+Alt+A)")).toBeVisible();
+
     await emitWaylandShortcut({ status: "error", message: "El portal rechazó el atajo" });
     expect(screen.getByText(/El portal rechazó el atajo/)).toBeVisible();
+  });
+
+  it("retries a portal configuration once when cleanup is still pending", async () => {
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalledOnce());
+    await emitWaylandShortcut({
+      status: "error",
+      message: "La limpieza de una sesión Wayland anterior todavía está pendiente",
+    });
+
+    await waitFor(
+      () => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalledTimes(2),
+      { timeout: 1500 },
+    );
+    expect(bridge.configureWaylandHoldShortcut).toHaveBeenLastCalledWith(DEFAULT_SETTINGS.shortcut);
+  });
+
+  it("retries when the portal command rejects because cleanup is still pending", async () => {
+    const { bridge } = makeWaylandBridge();
+    bridge.configureWaylandHoldShortcut = vi.fn()
+      .mockRejectedValueOnce(new Error("La limpieza de una sesión Wayland anterior todavía está pendiente"))
+      .mockResolvedValue(undefined);
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(
+      () => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalledTimes(2),
+      { timeout: 1500 },
+    );
+    expect(bridge.configureWaylandHoldShortcut).toHaveBeenLastCalledWith(DEFAULT_SETTINGS.shortcut);
+  });
+
+  it("requests portal configuration when an existing assignment is changed", async () => {
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalledWith(
+      DEFAULT_SETTINGS.shortcut,
+    ));
+    await emitWaylandShortcut({ status: "registered", triggerDescription: "Ctrl+Shift+Space" });
+
+    fireEvent.click(screen.getByRole("button", { name: /capturar atajo/i }));
+    fireEvent.keyDown(screen.getByRole("button", { name: /pulsa el atajo/i }), {
+      code: "KeyA",
+      key: "a",
+      ctrlKey: true,
+      altKey: true,
+    });
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenLastCalledWith(
+      "CommandOrControl+Alt+A",
+      { requestConfiguration: true },
+    ));
   });
 
   it("clears the portal listener and session on unmount", async () => {
@@ -357,7 +478,12 @@ describe("AppShell", () => {
       oldGlobalHandler = args[1] as ((event: { state: "Pressed" | "Released" }) => void);
     });
     const bridge = makeBridge({
-      diagnosePlatform: vi.fn(async () => ({ session: "x11" as const })),
+      diagnosePlatform: vi.fn(async () => ({
+        session: "x11" as const,
+        shortcutMethod: "x11-global-hook",
+        holdModeSupported: true,
+        toggleModeSupported: true,
+      })),
       startDictation: vi.fn(async () => ({ status: "recording" as const })),
       stopDictation: vi.fn(async () => ({ status: "copied" as const })),
     });

@@ -13,6 +13,7 @@ export interface AppProps {
 
 export default function App({ bridge = nativeBridge, forceOnboarding = false }: AppProps) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsReady, setSettingsReady] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(() => {
     if (forceOnboarding || typeof window === "undefined") return false;
     return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true";
@@ -20,11 +21,16 @@ export default function App({ bridge = nativeBridge, forceOnboarding = false }: 
 
   useEffect(() => {
     let cancelled = false;
+    setSettingsReady(false);
     void bridge.loadSettings().then((loadedSettings) => {
-      if (!cancelled) setSettings(loadedSettings);
+      if (!cancelled) {
+        setSettings(loadedSettings);
+        setSettingsReady(true);
+      }
     }).catch(() => {
       // The UI keeps safe local defaults when the native store is unavailable.
       // This path is also used by the browser preview; no telemetry is sent.
+      if (!cancelled) setSettingsReady(true);
     });
     return () => {
       cancelled = true;
@@ -46,9 +52,13 @@ export default function App({ bridge = nativeBridge, forceOnboarding = false }: 
     setOnboardingComplete(false);
   }
 
+  if (!settingsReady) {
+    return <p role="status">Cargando configuración…</p>;
+  }
+
   if (!onboardingComplete) {
     return <OnboardingFlow bridge={bridge} initialSettings={settings} onComplete={completeOnboarding} />;
   }
 
-  return <AppShell bridge={bridge} settings={settings} onRestartOnboarding={restartOnboarding} />;
+  return <AppShell bridge={bridge} settings={settings} settingsReady={settingsReady} onRestartOnboarding={restartOnboarding} />;
 }

@@ -1,5 +1,8 @@
 use ashpd::desktop::{
-    global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut},
+    global_shortcuts::{
+        BindShortcutsOptions, ConfigureShortcutsOptions, GlobalShortcuts, ListShortcutsOptions,
+        NewShortcut,
+    },
     CreateSessionOptions, Session,
 };
 use futures_util::StreamExt;
@@ -132,6 +135,32 @@ pub struct PortalShortcutEvent {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PortalConfigurationAction {
+    BindOnly,
+    Configure,
+    ExplainDesktopAssignment,
+}
+
+pub(crate) fn configuration_action(
+    portal_version: u32,
+    requested_change: bool,
+) -> PortalConfigurationAction {
+    if !requested_change {
+        PortalConfigurationAction::BindOnly
+    } else if portal_version >= 2 {
+        PortalConfigurationAction::Configure
+    } else {
+        PortalConfigurationAction::ExplainDesktopAssignment
+    }
+}
+
+pub(crate) fn stream_end_error(stream: &str) -> String {
+    format!("El stream portal {stream} terminó sin cancelación")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,12 +407,14 @@ fn emit_event(
     app: &AppHandle,
     kind: PortalEventKind,
     message: Option<String>,
+    trigger_description: Option<String>,
 ) -> Result<(), String> {
     app.emit(
         EVENT_NAME,
         PortalShortcutEvent {
             status: kind.status().to_string(),
             message,
+            trigger_description,
         },
     )
     .map_err(|error| format!("No se pudo emitir el estado del atajo Wayland: {error}"))
@@ -394,6 +425,7 @@ fn emit_event_if_current(
     generation: u64,
     kind: PortalEventKind,
     message: Option<String>,
+    trigger_description: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let lifecycle = state
@@ -404,7 +436,7 @@ fn emit_event_if_current(
         return Ok(());
     }
 
-    emit_event(app, kind, message)
+    emit_event(app, kind, message, trigger_description)
 }
 
 fn is_current_generation(current_generation: u64, event_generation: u64) -> bool {
@@ -442,7 +474,6 @@ fn session_handle_string(session: &Session<GlobalShortcuts>) -> Result<String, S
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionRunOutcome {
-    Completed,
     Cancelled,
 }
 
@@ -452,6 +483,7 @@ async fn run_portal_session_with_session(
     trigger: &str,
     app: &AppHandle,
     generation: u64,
+    request_configuration: bool,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<SessionRunOutcome, String> {
     let session_handle = session_handle_string(session)?;
@@ -471,13 +503,45 @@ async fn run_portal_session_with_session(
     let bound = request
         .response()
         .map_err(|error| format!("El portal no asignó el atajo Wayland: {error}"))?;
-    if !bound
+    let assigned = bound
         .shortcuts()
         .iter()
-        .any(|registered| registered.id() == SHORTCUT_ID)
-    {
-        return Err("El portal no asignó el atajo Wayland solicitado".into());
-    }
+        .find(|registered| registered.id() == SHORTCUT_ID)
+        .ok_or_else(|| "El portal no asignó el atajo Wayland solicitado".to_string())?;
+    let mut trigger_description = assigned.trigger_description().to_string();
+    let configuration_message = match configuration_action(portal.version(), request_configuration) {
+        PortalConfigurationAction::BindOnly => None,
+        PortalConfigurationAction::Configure => {
+            tokio::select! {
+                result = portal.configure_shortcuts(
+                    session,
+                    None,
+                    ConfigureShortcutsOptions::default(),
+                ) => result,
+                _ = &mut *cancel => return Ok(SessionRunOutcome::Cancelled),
+            }
+            .map_err(|error| format!("No se pudo abrir la configuración del atajo Wayland: {error}"))?;
+
+            let listed = tokio::select! {
+                result = portal.list_shortcuts(session, ListShortcutsOptions::default()) => result,
+                _ = &mut *cancel => return Ok(SessionRunOutcome::Cancelled),
+            }
+            .map_err(|error| format!("No se pudo leer la asignación del atajo Wayland: {error}"))?
+            .response()
+            .map_err(|error| format!("El portal no devolvió la asignación del atajo Wayland: {error}"))?;
+            let assigned = listed
+                .shortcuts()
+                .iter()
+                .find(|registered| registered.id() == SHORTCUT_ID)
+                .ok_or_else(|| "El portal no devolvió el atajo Wayland configurado".to_string())?;
+            trigger_description = assigned.trigger_description().to_string();
+            None
+        }
+        PortalConfigurationAction::ExplainDesktopAssignment => Some(
+            "El escritorio mantiene este enlace; usa su configuración de atajos para cambiarlo"
+                .to_string(),
+        ),
+    };
 
     let mut activated = tokio::select! {
         result = portal.receive_activated() => result,
@@ -496,7 +560,13 @@ async fn run_portal_session_with_session(
     .map_err(|error| format!("No se pudo escuchar el cierre de la sesión Wayland: {error}"))?;
 
     // Todas las suscripciones están activas antes de emitir `registered`.
-    emit_event_if_current(app, generation, PortalEventKind::Registered, None)?;
+    emit_event_if_current(
+        app,
+        generation,
+        PortalEventKind::Registered,
+        configuration_message,
+        Some(trigger_description),
+    )?;
 
     loop {
         tokio::select! {
@@ -504,33 +574,33 @@ async fn run_portal_session_with_session(
             event = activated.next() => {
                 let event = match event {
                     Some(event) => event,
-                    None => return Ok(SessionRunOutcome::Completed),
+                    None => return Err(stream_end_error("activated")),
                 };
                 if event_matches_session(
                     event.session_handle().as_str(),
                     event.shortcut_id(),
                     &session_handle,
                 ) {
-                    emit_event_if_current(app, generation, PortalEventKind::Activated, None)?;
+                    emit_event_if_current(app, generation, PortalEventKind::Activated, None, None)?;
                 }
             }
             event = deactivated.next() => {
                 let event = match event {
                     Some(event) => event,
-                    None => return Ok(SessionRunOutcome::Completed),
+                    None => return Err(stream_end_error("deactivated")),
                 };
                 if event_matches_session(
                     event.session_handle().as_str(),
                     event.shortcut_id(),
                     &session_handle,
                 ) {
-                    emit_event_if_current(app, generation, PortalEventKind::Deactivated, None)?;
+                    emit_event_if_current(app, generation, PortalEventKind::Deactivated, None, None)?;
                 }
             }
             closed_event = closed.next() => {
                 match closed_event {
                     Some(_) => return Err("El portal cerró la sesión de atajo Wayland".into()),
-                    None => return Ok(SessionRunOutcome::Completed),
+                    None => return Err(stream_end_error("closed")),
                 }
             }
         }
@@ -656,6 +726,7 @@ async fn run_portal_session_inner(
     shortcut: String,
     app: &AppHandle,
     generation: u64,
+    request_configuration: bool,
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<(), String> {
     validate_shortcut(&shortcut)?;
@@ -682,15 +753,15 @@ async fn run_portal_session_inner(
         trigger.as_str(),
         app,
         generation,
+        request_configuration,
         &mut cancel,
     )
     .await;
-    let close_result = close_session_with_timeout(app, session).await;
+    let _close_result = close_session_with_timeout(app, session).await;
 
     match result {
         Err(error) => Err(error),
         Ok(SessionRunOutcome::Cancelled) => Ok(()),
-        Ok(SessionRunOutcome::Completed) => close_result.map(|_| ()),
     }
 }
 
@@ -698,15 +769,24 @@ pub async fn run_portal_session(
     shortcut: String,
     app: AppHandle,
     generation: u64,
+    request_configuration: bool,
     cancel: oneshot::Receiver<()>,
 ) -> Result<(), String> {
-    let result = run_portal_session_inner(shortcut, &app, generation, cancel).await;
+    let result = run_portal_session_inner(
+        shortcut,
+        &app,
+        generation,
+        request_configuration,
+        cancel,
+    )
+    .await;
     if let Err(error) = &result {
         let _ = emit_event_if_current(
             &app,
             generation,
             PortalEventKind::Error,
             Some(error.clone()),
+            None,
         );
     }
     clear_task_for_generation(&app, generation);
@@ -753,6 +833,7 @@ fn is_current_request(state: &RuntimeState, generation: u64) -> Result<bool, Str
 #[tauri::command]
 pub(crate) async fn configure_wayland_hold_shortcut(
     shortcut: String,
+    request_configuration: Option<bool>,
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<(), String> {
@@ -779,7 +860,14 @@ pub(crate) async fn configure_wayland_hold_shortcut(
         .lock()
         .map_err(|_| "No se pudo actualizar la sesión de atajo Wayland".to_string())?;
     let task = tauri::async_runtime::spawn(async move {
-        let _ = run_portal_session(shortcut, app, generation, cancel_receiver).await;
+        let _ = run_portal_session(
+            shortcut,
+            app,
+            generation,
+            request_configuration.unwrap_or(false),
+            cancel_receiver,
+        )
+        .await;
     });
     *active_task = Some(WaylandShortcutTask {
         generation,
@@ -787,6 +875,13 @@ pub(crate) async fn configure_wayland_hold_shortcut(
         task,
     });
     Ok(())
+}
+
+pub(crate) async fn probe_portal() -> Result<u32, String> {
+    GlobalShortcuts::new()
+        .await
+        .map(|portal| portal.version())
+        .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))
 }
 
 #[tauri::command]
@@ -805,9 +900,10 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_matches_session, is_current_generation, to_xdg_trigger, validate_shortcut,
+        configuration_action, event_matches_session, is_current_generation, stream_end_error,
+        to_xdg_trigger, validate_shortcut,
         CleanupPolicy, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
-        CLEANUP_POLICY, SHORTCUT_ID,
+        PortalConfigurationAction, CLEANUP_POLICY, SHORTCUT_ID,
     };
 
     #[test]
@@ -850,6 +946,29 @@ mod tests {
     fn maps_portal_state_to_frontend_status() {
         assert_eq!(PortalEventKind::Activated.status(), "pressed");
         assert_eq!(PortalEventKind::Deactivated.status(), "released");
+    }
+
+    #[test]
+    fn exposes_the_portal_configuration_decision_for_v1_and_v2() {
+        assert_eq!(
+            configuration_action(1, false),
+            PortalConfigurationAction::BindOnly
+        );
+        assert_eq!(
+            configuration_action(1, true),
+            PortalConfigurationAction::ExplainDesktopAssignment
+        );
+        assert_eq!(
+            configuration_action(2, true),
+            PortalConfigurationAction::Configure
+        );
+    }
+
+    #[test]
+    fn treats_every_non_cancelled_stream_end_as_an_error() {
+        assert!(stream_end_error("activated").contains("activated"));
+        assert!(stream_end_error("deactivated").contains("deactivated"));
+        assert!(stream_end_error("closed").contains("closed"));
     }
 
     #[test]
