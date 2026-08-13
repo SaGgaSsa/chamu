@@ -4,6 +4,8 @@ use ashpd::desktop::{
 };
 use futures_util::StreamExt;
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
@@ -12,6 +14,23 @@ use crate::RuntimeState;
 const EVENT_NAME: &str = "wayland-hold-shortcut";
 const SHORTCUT_ID: &str = "chamu_hold_dictation";
 const SHORTCUT_DESCRIPTION: &str = "Iniciar dictado mientras se mantiene pulsado";
+const CLEANUP_PENDING_MESSAGE: &str =
+    "La limpieza de una sesión Wayland anterior todavía está pendiente";
+
+// Keep one detached cleanup at most. Both portal waits are bounded, so
+// process shutdown has a finite policy even if the portal does not answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CleanupPolicy {
+    create_session_timeout: Duration,
+    close_timeout: Duration,
+    max_pending: usize,
+}
+
+const CLEANUP_POLICY: CleanupPolicy = CleanupPolicy {
+    create_session_timeout: Duration::from_secs(2),
+    close_timeout: Duration::from_secs(2),
+    max_pending: 1,
+};
 
 pub(crate) struct WaylandShortcutTask {
     generation: u64,
@@ -36,6 +55,75 @@ impl ShortcutLifecycleState {
     fn is_current(&self, generation: u64) -> bool {
         is_current_generation(self.current_generation, generation)
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ShortcutCleanupState {
+    pending: usize,
+}
+
+impl ShortcutCleanupState {
+    fn reserve(&mut self) -> bool {
+        if self.pending >= CLEANUP_POLICY.max_pending {
+            return false;
+        }
+        self.pending += 1;
+        true
+    }
+
+    fn release(&mut self) {
+        self.pending = self.pending.saturating_sub(1);
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending > 0
+    }
+}
+
+struct CleanupLease {
+    state: Arc<Mutex<ShortcutCleanupState>>,
+}
+
+impl Drop for CleanupLease {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.release();
+        }
+    }
+}
+
+type PortalCreateResult = (
+    GlobalShortcuts,
+    Result<Session<GlobalShortcuts>, ashpd::Error>,
+);
+type PortalCreateTask = tauri::async_runtime::JoinHandle<PortalCreateResult>;
+type PortalCloseTask = tauri::async_runtime::JoinHandle<Result<(), String>>;
+
+fn cleanup_state(app: &AppHandle) -> Arc<Mutex<ShortcutCleanupState>> {
+    app.state::<RuntimeState>().wayland_shortcut_cleanup.clone()
+}
+
+fn ensure_cleanup_available(app: &AppHandle) -> Result<(), String> {
+    let state = cleanup_state(app);
+    let cleanup = state
+        .lock()
+        .map_err(|_| "No se pudo comprobar la limpieza del atajo Wayland".to_string())?;
+    if cleanup.is_pending() {
+        return Err(CLEANUP_PENDING_MESSAGE.into());
+    }
+    Ok(())
+}
+
+fn reserve_cleanup(app: &AppHandle) -> Result<CleanupLease, String> {
+    let state = cleanup_state(app);
+    let mut cleanup = state
+        .lock()
+        .map_err(|_| "No se pudo reservar la limpieza del atajo Wayland".to_string())?;
+    if !cleanup.reserve() {
+        return Err(CLEANUP_PENDING_MESSAGE.into());
+    }
+    drop(cleanup);
+    Ok(CleanupLease { state })
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -154,11 +242,27 @@ fn key_to_xdg(token: &str) -> String {
         }
         _ if lowercase.starts_with("key") && lowercase.len() == 4 => lowercase[3..].to_string(),
         _ if lowercase.starts_with("digit") && lowercase.len() == 6 => lowercase[5..].to_string(),
+        _ if function_key_number(normalized).is_some() => {
+            format!("F{}", function_key_number(normalized).unwrap())
+        }
         _ if lowercase.starts_with('f') && lowercase[1..].parse::<u8>().is_ok() => {
             normalized.to_ascii_uppercase()
         }
         _ => normalized.to_string(),
     }
+}
+
+fn function_key_number(token: &str) -> Option<u8> {
+    let lowercase = token.trim().to_ascii_lowercase();
+    let suffix = lowercase.strip_prefix('f')?;
+    if suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+
+    suffix
+        .parse::<u8>()
+        .ok()
+        .filter(|number| (1..=35).contains(number))
 }
 
 fn is_known_main_key(token: &str) -> bool {
@@ -230,11 +334,7 @@ fn is_known_main_key(token: &str) -> bool {
         || (lowercase.starts_with("digit")
             && lowercase.len() == 6
             && lowercase.as_bytes()[5].is_ascii_digit())
-        || (lowercase.starts_with('f')
-            && lowercase[1..]
-                .parse::<u8>()
-                .map(|number| (1..=35).contains(&number))
-                .unwrap_or(false))
+        || function_key_number(normalized).is_some()
 }
 
 fn validate_shortcut(shortcut: &str) -> Result<(), String> {
@@ -437,11 +537,100 @@ async fn run_portal_session_with_session(
     }
 }
 
+async fn finish_close_cleanup(mut close_task: PortalCloseTask) {
+    if tokio::time::timeout(CLEANUP_POLICY.close_timeout, &mut close_task)
+        .await
+        .is_err()
+    {
+        close_task.abort();
+    }
+}
+
+fn schedule_close_cleanup(app: &AppHandle, close_task: PortalCloseTask) -> Result<(), String> {
+    let lease = match reserve_cleanup(app) {
+        Ok(lease) => lease,
+        Err(error) => {
+            // The lifecycle invariant permits one pending cleanup. Abort is
+            // only the bounded fallback if that invariant is violated.
+            close_task.abort();
+            return Err(error);
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        let _lease = lease;
+        finish_close_cleanup(close_task).await;
+    });
+    Ok(())
+}
+
+async fn close_session_with_timeout(
+    app: &AppHandle,
+    session: Session<GlobalShortcuts>,
+) -> Result<(), String> {
+    let mut close_task = tauri::async_runtime::spawn(async move {
+        session
+            .close()
+            .await
+            .map_err(|error| format!("No se pudo cerrar la sesión de atajos Wayland: {error}"))
+    });
+    match tokio::time::timeout(CLEANUP_POLICY.close_timeout, &mut close_task).await {
+        Ok(result) => match result {
+            Ok(result) => result,
+            Err(error) => Err(format!(
+                "La tarea de cierre de sesión Wayland falló: {error}"
+            )),
+        },
+        Err(_) => {
+            let timeout_message =
+                "Se agotó el tiempo de cierre de la sesión de atajos Wayland".to_string();
+            if let Err(error) = schedule_close_cleanup(app, close_task) {
+                return Err(format!("{timeout_message}: {error}"));
+            }
+            Err(timeout_message)
+        }
+    }
+}
+
+fn schedule_create_cleanup(
+    app: &AppHandle,
+    mut creation_task: PortalCreateTask,
+) -> Result<(), String> {
+    let lease = match reserve_cleanup(app) {
+        Ok(lease) => lease,
+        Err(error) => {
+            // No second unbounded create task is allowed. The portal
+            // connection is dropped after cancelling this exact request.
+            creation_task.abort();
+            return Err(error);
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        let _lease = lease;
+        match tokio::time::timeout(CLEANUP_POLICY.create_session_timeout, &mut creation_task).await
+        {
+            Ok(Ok((_, Ok(session)))) => {
+                let close_task = tauri::async_runtime::spawn(async move {
+                    session.close().await.map_err(|error| {
+                        format!("No se pudo cerrar la sesión de atajos Wayland: {error}")
+                    })
+                });
+                finish_close_cleanup(close_task).await;
+            }
+            Ok(Ok((_, Err(_)))) | Ok(Err(_)) => {}
+            Err(_) => {
+                creation_task.abort();
+            }
+        }
+    });
+    Ok(())
+}
+
 async fn create_session_with_cancellation(
     portal: GlobalShortcuts,
+    app: &AppHandle,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<(GlobalShortcuts, Session<GlobalShortcuts>)>, String> {
-    let mut creation_task = tauri::async_runtime::spawn(async move {
+    let mut creation_task: PortalCreateTask = tauri::async_runtime::spawn(async move {
         let result = portal.create_session(CreateSessionOptions::default()).await;
         (portal, result)
     });
@@ -455,13 +644,9 @@ async fn create_session_with_cancellation(
             Ok(Some((portal, session)))
         }
         _ = &mut *cancel => {
-            // The exact create request keeps running. If it returns a Session
-            // after cancellation, this detached cleanup task closes it.
-            tauri::async_runtime::spawn(async move {
-                if let Ok((_, Ok(session))) = creation_task.await {
-                    let _ = session.close().await;
-                }
-            });
+            // Keep the exact create request bounded. If it returns a Session
+            // after cancellation, the cleanup task closes it explicitly.
+            schedule_create_cleanup(app, creation_task)?;
             Ok(None)
         }
     }
@@ -478,13 +663,15 @@ async fn run_portal_session_inner(
     if trigger.is_empty() {
         return Err("El atajo Wayland no puede estar vacío".into());
     }
+    ensure_cleanup_available(app)?;
 
     let portal = tokio::select! {
         result = GlobalShortcuts::new() => result,
         _ = &mut cancel => return Ok(()),
     }
     .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))?;
-    let Some((portal, session)) = create_session_with_cancellation(portal, &mut cancel).await?
+    let Some((portal, session)) =
+        create_session_with_cancellation(portal, app, &mut cancel).await?
     else {
         return Ok(());
     };
@@ -498,10 +685,7 @@ async fn run_portal_session_inner(
         &mut cancel,
     )
     .await;
-    let close_result = session
-        .close()
-        .await
-        .map_err(|error| format!("No se pudo cerrar la sesión de atajos Wayland: {error}"));
+    let close_result = close_session_with_timeout(app, session).await;
 
     match result {
         Err(error) => Err(error),
@@ -587,6 +771,7 @@ pub(crate) async fn configure_wayland_hold_shortcut(
     if !is_current_request(&state, generation)? {
         return Ok(());
     }
+    ensure_cleanup_available(&app)?;
 
     let (cancel, cancel_receiver) = oneshot::channel();
     let mut active_task = state
@@ -621,7 +806,8 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 mod tests {
     use super::{
         event_matches_session, is_current_generation, to_xdg_trigger, validate_shortcut,
-        PortalEventKind, ShortcutLifecycleState, SHORTCUT_ID,
+        CleanupPolicy, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
+        CLEANUP_POLICY, SHORTCUT_ID,
     };
 
     #[test]
@@ -647,6 +833,17 @@ mod tests {
         assert_eq!(to_xdg_trigger("Shift+F12"), "SHIFT+F12");
         assert_eq!(to_xdg_trigger("Ctrl+PageDown"), "CTRL+Page_Down");
         assert_eq!(to_xdg_trigger("Ctrl+ScrollLock"), "CTRL+Scroll_Lock");
+    }
+
+    #[test]
+    fn normalizes_supported_function_keys_and_rejects_out_of_range_keys() {
+        assert_eq!(to_xdg_trigger("Ctrl+F1"), "CTRL+F1");
+        assert_eq!(to_xdg_trigger("Ctrl+F01"), "CTRL+F1");
+        assert_eq!(to_xdg_trigger("Ctrl+F35"), "CTRL+F35");
+        assert!(validate_shortcut("Ctrl+F1").is_ok());
+        assert!(validate_shortcut("Ctrl+F01").is_ok());
+        assert!(validate_shortcut("Ctrl+F35").is_ok());
+        assert!(validate_shortcut("Ctrl+F36").is_err());
     }
 
     #[test]
@@ -707,5 +904,31 @@ mod tests {
         assert!(second > first);
         assert!(!lifecycle.is_current(first));
         assert!(lifecycle.is_current(second));
+    }
+
+    #[test]
+    fn cleanup_state_deduplicates_pending_cleanup() {
+        let mut cleanup = ShortcutCleanupState::default();
+        assert!(cleanup.reserve());
+        assert!(!cleanup.reserve());
+        assert!(cleanup.is_pending());
+        cleanup.release();
+        assert!(!cleanup.is_pending());
+        assert!(cleanup.reserve());
+    }
+
+    #[test]
+    fn cleanup_policy_has_bounded_single_pending_cleanup() {
+        assert_eq!(
+            CLEANUP_POLICY,
+            CleanupPolicy {
+                create_session_timeout: std::time::Duration::from_secs(2),
+                close_timeout: std::time::Duration::from_secs(2),
+                max_pending: 1,
+            }
+        );
+        assert!(CLEANUP_POLICY.create_session_timeout > std::time::Duration::ZERO);
+        assert!(CLEANUP_POLICY.close_timeout > std::time::Duration::ZERO);
+        assert_eq!(CLEANUP_POLICY.max_pending, 1);
     }
 }

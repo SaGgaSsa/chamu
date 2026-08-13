@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -42,6 +42,7 @@ struct RuntimeState {
     wayland_shortcut_task: Mutex<Option<wayland_shortcut::WaylandShortcutTask>>,
     wayland_shortcut_operation: tauri::async_runtime::Mutex<()>,
     wayland_shortcut_lifecycle: Mutex<wayland_shortcut::ShortcutLifecycleState>,
+    wayland_shortcut_cleanup: Arc<Mutex<wayland_shortcut::ShortcutCleanupState>>,
 }
 
 static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -163,6 +164,9 @@ impl Default for RuntimeState {
             wayland_shortcut_task: Mutex::new(None),
             wayland_shortcut_operation: tauri::async_runtime::Mutex::new(()),
             wayland_shortcut_lifecycle: Mutex::new(wayland_shortcut::ShortcutLifecycleState::default()),
+            wayland_shortcut_cleanup: Arc::new(Mutex::new(
+                wayland_shortcut::ShortcutCleanupState::default(),
+            )),
         }
     }
 }
