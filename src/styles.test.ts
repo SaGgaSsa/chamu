@@ -58,4 +58,16 @@ describe('Chamu visual tokens', () => {
   it('stops the recording pulse animation when reduced motion is requested', () => {
     expect(styles).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.dictation-control__pulse[\s\S]*?animation:\s*none(?:\s*!important)?\s*;/i);
   });
+
+  it('keeps the dictation tester inside the window and scrolls only its text area', () => {
+    expect(cssBlock('\\.dictation-tester')).toMatch(/display:\s*flex\s*;/i);
+    expect(cssBlock('\\.dictation-tester')).toMatch(/min-height:\s*0\s*;/i);
+    expect(cssBlock('\\.dictation-tester__text')).toMatch(/flex:\s*1\s*;/i);
+    expect(cssBlock('\\.dictation-tester__text')).toMatch(/overflow-y:\s*auto\s*;/i);
+  });
+
+  it('compacts the dictation tester for short desktop windows', () => {
+    expect(styles).toMatch(/@media\s*\(max-height:/i);
+    expect(styles).toMatch(/\.dictation-tester[\s\S]*?gap:\s*var\(--space-3\)/i);
+  });
 });

@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { fireEvent, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import { AppShell } from "./AppShell";
 import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
-import type { ChamuBridge, DictationResult, HistoryEntry } from "../native/commands";
+import type { ChamuBridge, DictationResult } from "../native/commands";
 
 const shortcutPlugin = vi.hoisted(() => ({
   register: vi.fn(async () => undefined),
@@ -36,7 +36,7 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("heading", { name: "Chamu" })).toBeVisible();
     expect(screen.getByText("Tu voz, en tus manos")).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("Listo");
+    expect(screen.getAllByRole("status")[0]).toHaveTextContent("Listo");
     expect(screen.getByText("Todo ocurre en este dispositivo")).toBeVisible();
   });
 
@@ -91,7 +91,7 @@ describe("AppShell", () => {
   it("renders the active recording status from state", () => {
     render(<AppShell recordingState={{ status: "recording" }} />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Grabando");
+    expect(screen.getAllByRole("status")[0]).toHaveTextContent("Grabando");
     expect(screen.getByText("Suelta el atajo para terminar")).toBeVisible();
   });
 
@@ -105,71 +105,51 @@ describe("AppShell", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Error");
+    expect(screen.getAllByRole("status")[0]).toHaveTextContent("Error");
     expect(screen.getByText("No se encontró un micrófono")).toBeVisible();
     expect(screen.queryByRole("button", { name: /reproducir audio/i })).toBeNull();
   });
 
-  it("loads text-only history and lets the user copy or delete each entry", async () => {
-    const bridge = makeBridge();
-    const history: HistoryEntry[] = [
-      { id: "entry-1", text: "Hola desde Chamu", createdAt: "2026-08-12T18:30:00.000Z" },
-    ];
-
-    render(<AppShell bridge={bridge} initialHistory={history} />);
-
-    expect(screen.getByRole("heading", { name: /historial/i })).toBeVisible();
-    expect(screen.getByText("Hola desde Chamu")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /copiar/i }));
-    await waitFor(() => expect(bridge.copyHistory).toHaveBeenCalledWith(history[0].id));
-
-    fireEvent.click(screen.getByRole("button", { name: /borrar/i }));
-    await waitFor(() => expect(bridge.deleteHistory).toHaveBeenCalledWith("entry-1"));
-    expect(screen.queryByText("Hola desde Chamu")).toBeNull();
-  });
-
-  it("opens settings and saves the selected recording mode through the bridge", async () => {
+  it("does not render history or the system check in the main view", () => {
     const bridge = makeBridge();
     render(<AppShell bridge={bridge} />);
+
+    expect(screen.queryByRole("heading", { name: /historial/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /prueba del sistema/i })).toBeNull();
+    expect(bridge.loadHistory).not.toHaveBeenCalled();
+  });
+
+  it("keeps only language controls and onboarding reset in settings", async () => {
+    const bridge = makeBridge();
+    const onRestartOnboarding = vi.fn();
+    render(<AppShell bridge={bridge} onRestartOnboarding={onRestartOnboarding} />);
 
     fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
-    expect(screen.getByRole("dialog", { name: /configuración/i })).toBeVisible();
-    fireEvent.click(screen.getByRole("radio", { name: /pulsar para alternar/i }));
-    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
-    fireEvent.click(captureButton);
-    fireEvent.keyDown(captureButton, { code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
-    fireEvent.click(screen.getByRole("button", { name: /guardar configuración/i }));
+    const dialog = screen.getByRole("dialog", { name: /configuración/i });
+    expect(dialog).toBeVisible();
+    expect(within(dialog).getByRole("radio", { name: /english/i })).toBeVisible();
+    expect(within(dialog).queryByRole("radio", { name: /pulsar para alternar|mantener pulsado/i })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /capturar atajo/i })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("radio", { name: /english/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /guardar configuración/i }));
 
-    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
-      mode: "toggle",
-      shortcut: "CommandOrControl+Shift+A",
-    })));
+    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ language: "en" })));
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    fireEvent.click(screen.getByRole("button", { name: /reiniciar onboarding/i }));
+    expect(onRestartOnboarding).toHaveBeenCalledOnce();
   });
 
-  it("opens the system check and runs the local readiness probes", async () => {
+  it("saves mode and shortcut changes made in the dictation tester", async () => {
     const bridge = makeBridge();
-    bridge.inspectModel = vi.fn(async () => ({
-      id: "base",
-      name: "Whisper base multilingüe",
-      installed: true,
-      checksumValid: true,
-      sizeMiB: 142,
-    }));
-    bridge.testMicrophone = vi.fn(async () => ({ ok: true, message: "Micrófono disponible" }));
-    bridge.testClipboard = vi.fn(async () => ({ ok: true, message: "Portapapeles disponible" }));
-    bridge.testPaste = vi.fn(async () => ({ ok: true, message: "Pegado disponible" }));
-
     render(<AppShell bridge={bridge} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /abrir prueba del sistema/i }));
-    expect(screen.getByRole("dialog", { name: /prueba del sistema/i })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /ejecutar comprobaciones/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /pulsar para alternar/i }));
+    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" })));
 
-    await waitFor(() => expect(bridge.inspectModel).toHaveBeenCalledWith("base"));
-    expect(bridge.testMicrophone).toHaveBeenCalledOnce();
-    expect(bridge.testClipboard).toHaveBeenCalledOnce();
-    expect(bridge.testPaste).toHaveBeenCalledOnce();
-    expect(screen.getByText(/modelo validado/i)).toBeVisible();
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    fireEvent.keyDown(screen.getByRole("button", { name: /pulsa el atajo/i }), { code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ shortcut: "CommandOrControl+Shift+A" })));
   });
 
   it("runs the dictation lifecycle from recording through backend transcription result", async () => {
@@ -182,12 +162,15 @@ describe("AppShell", () => {
 
     render(<AppShell bridge={bridge} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /comenzar dictado/i }));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Grabando"));
+    fireEvent.focus(screen.getByRole("textbox", { name: /texto de prueba/i }));
+    const startButton = screen.getByRole("button", { name: /comenzar dictado/i });
+    fireEvent.mouseDown(startButton);
+    fireEvent.click(startButton);
+    await waitFor(() => expect(screen.getAllByRole("status")[0]).toHaveTextContent("Grabando"));
     expect(bridge.startDictation).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: /terminar dictado/i }));
-    expect(screen.getByRole("status")).toHaveTextContent("Transcribiendo");
+    expect(screen.getAllByRole("status")[0]).toHaveTextContent("Transcribiendo");
     expect(bridge.stopDictation).toHaveBeenCalledTimes(1);
 
     resolveStop?.({
@@ -200,8 +183,9 @@ describe("AppShell", () => {
       },
     });
 
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Copiado"));
-    expect(screen.getByText("Hola desde el micrófono")).toBeVisible();
+    await waitFor(() => expect(screen.getAllByRole("status")[0]).toHaveTextContent("Copiado"));
+    const textarea = screen.getByRole("textbox", { name: /texto de prueba/i });
+    await waitFor(() => expect(textarea).toHaveValue("Hola desde el micrófono"));
   });
 
   it("surfaces a backend dictation error and lets the user retry", async () => {
@@ -213,7 +197,7 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /comenzar dictado/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent("Error");
+      expect(screen.getAllByRole("status")[0]).toHaveTextContent("Error");
       expect(screen.getByText("No se pudo abrir el micrófono")).toBeVisible();
     });
   });
@@ -235,8 +219,9 @@ describe("AppShell", () => {
 
     const { unmount } = render(<AppShell bridge={makeBridge()} />);
 
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "Linux x86_64" });
     await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledWith(
-      DEFAULT_SETTINGS.shortcut,
+      "Ctrl+Shift+Space",
       expect.any(Function),
     ));
     unmount();
@@ -245,7 +230,7 @@ describe("AppShell", () => {
 
     resolveRegister?.();
 
-    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledWith(DEFAULT_SETTINGS.shortcut));
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledWith("Ctrl+Shift+Space"));
     expect(lifecycle).toEqual(["registered", "unregistered"]);
   });
 });

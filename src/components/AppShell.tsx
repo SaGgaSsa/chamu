@@ -3,55 +3,46 @@ import { createRecordingState, type RecordingState } from "../domain/recording";
 import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
 import {
   nativeBridge,
-  type ClipboardCheck,
   type DictationResult,
   type ChamuBridge,
-  type HistoryEntry,
-  type MicrophoneCheck,
-  type ModelStatus,
 } from "../native/commands";
 import { PrivacyBadge } from "./PrivacyBadge";
-import { ShortcutField } from "./ShortcutField";
+import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
-import { DictationControl } from "./DictationControl";
+import { DictationTester, type DictationTesterHandle } from "./DictationTester";
 
 interface AppShellProps {
   recordingState?: RecordingState;
   settings?: AppSettings;
   bridge?: ChamuBridge;
-  initialHistory?: HistoryEntry[];
+  onRestartOnboarding?: () => void;
 }
 
 export function AppShell({
   recordingState,
   settings = DEFAULT_SETTINGS,
   bridge,
-  initialHistory,
+  onRestartOnboarding,
 }: AppShellProps) {
   const activeBridge = bridge ?? nativeBridge;
   const [currentRecordingState, setCurrentRecordingState] = useState<RecordingState>(
     () => recordingState ?? createRecordingState(),
   );
   const [currentSettings, setCurrentSettings] = useState<AppSettings>(settings);
-  const [history, setHistory] = useState<HistoryEntry[]>(initialHistory ?? []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftSettings, setDraftSettings] = useState<AppSettings>(settings);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [copiedEntryId, setCopiedEntryId] = useState<string | number | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [dictationActionPending, setDictationActionPending] = useState(false);
-  const [systemCheckOpen, setSystemCheckOpen] = useState(false);
-  const [checkingSystem, setCheckingSystem] = useState(false);
-  const [systemCheck, setSystemCheck] = useState<{
-    model?: ModelStatus;
-    microphone?: MicrophoneCheck;
-    clipboard?: ClipboardCheck;
-    paste?: ClipboardCheck;
-    error?: string;
-  }>({});
+  const [dictationResult, setDictationResult] = useState<{
+    text?: DictationResult["text"];
+    id: string | number;
+  }>();
   const [shortcutRegistrationError, setShortcutRegistrationError] = useState<string | null>(null);
   const shortcutHandlerRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
+  const testerRef = useRef<DictationTesterHandle>(null);
+  const dictationResultCounterRef = useRef(0);
 
   useEffect(() => {
     if (recordingState) setCurrentRecordingState(recordingState);
@@ -62,50 +53,10 @@ export function AppShell({
     setDraftSettings(settings);
   }, [settings]);
 
-  useEffect(() => {
-    if (!bridge || initialHistory) return;
-
-    let cancelled = false;
-    void bridge.loadHistory().then((entries) => {
-      if (!cancelled) setHistory(entries);
-    }).catch((error: unknown) => {
-      if (!cancelled) setHistoryError(error instanceof Error ? error.message : "No se pudo cargar el historial");
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [bridge, initialHistory]);
-
-  const modeLabel = currentSettings.mode === "hold" ? "Mantener pulsado" : "Pulsar para alternar";
-
   function openSettings() {
     setDraftSettings(currentSettings);
     setSettingsError(null);
     setSettingsOpen(true);
-  }
-
-  function openSystemCheck() {
-    setSystemCheck({});
-    setSystemCheckOpen(true);
-  }
-
-  async function runSystemCheck() {
-    setCheckingSystem(true);
-    setSystemCheck({});
-    try {
-      const [model, microphone, clipboard, paste] = await Promise.all([
-        activeBridge.inspectModel("base"),
-        activeBridge.testMicrophone(),
-        activeBridge.testClipboard(),
-        activeBridge.testPaste(),
-      ]);
-      setSystemCheck({ model, microphone, clipboard, paste });
-    } catch (error: unknown) {
-      setSystemCheck({ error: getErrorMessage(error, "No se pudo completar la comprobación local") });
-    } finally {
-      setCheckingSystem(false);
-    }
   }
 
   async function saveSettings() {
@@ -122,25 +73,18 @@ export function AppShell({
     }
   }
 
-  async function copyEntry(entry: HistoryEntry) {
-    setHistoryError(null);
-    try {
-      await activeBridge.copyHistory(entry.id);
-      setCopiedEntryId(entry.id);
-      window.setTimeout(() => setCopiedEntryId((current) => current === entry.id ? null : current), 1800);
-    } catch (error: unknown) {
-      setHistoryError(error instanceof Error ? error.message : "No se pudo copiar la entrada");
-    }
+  function handleTesterSettingsChange(nextSettings: AppSettings) {
+    setCurrentSettings(nextSettings);
+    setDraftSettings(nextSettings);
+    setSettingsSaveError(null);
+    void activeBridge.saveSettings(nextSettings).catch((error: unknown) => {
+      setSettingsSaveError(getErrorMessage(error, "No se pudo guardar la configuración"));
+    });
   }
 
-  async function deleteEntry(entry: HistoryEntry) {
-    setHistoryError(null);
-    try {
-      await activeBridge.deleteHistory(entry.id);
-      setHistory((current) => current.filter((candidate) => candidate.id !== entry.id));
-    } catch (error: unknown) {
-      setHistoryError(error instanceof Error ? error.message : "No se pudo borrar la entrada");
-    }
+  function restartOnboarding() {
+    setSettingsOpen(false);
+    onRestartOnboarding?.();
   }
 
   async function handleDictation() {
@@ -151,6 +95,7 @@ export function AppShell({
       return;
     }
 
+    testerRef.current?.prepareForDictation();
     await startDictation();
   }
 
@@ -170,7 +115,7 @@ export function AppShell({
     if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
 
     let disposed = false;
-    const shortcut = currentSettings.shortcut;
+    const shortcut = normalizeShortcutForPlatform(currentSettings.shortcut);
     let registered = false;
     let unregisterStarted = false;
     let unregisterShortcut: ((shortcut: string) => Promise<void>) | undefined;
@@ -212,7 +157,6 @@ export function AppShell({
 
   async function startDictation() {
     setDictationActionPending(true);
-    setHistoryError(null);
     try {
       if (!activeBridge.startDictation) {
         throw new Error("El dictado nativo no está disponible");
@@ -229,7 +173,6 @@ export function AppShell({
   async function stopDictation() {
     setCurrentRecordingState({ status: "transcribing" });
     setDictationActionPending(true);
-    setHistoryError(null);
     try {
       if (!activeBridge.stopDictation) {
         throw new Error("El dictado nativo no está disponible");
@@ -261,7 +204,8 @@ export function AppShell({
         return;
       case "copied":
         setCurrentRecordingState({ status: "copied" });
-        void refreshHistoryAfterDictation(result);
+        const resultId = result.historyEntry?.id ?? ++dictationResultCounterRef.current;
+        setDictationResult({ text: result.text, id: resultId });
         return;
       case "error":
         setCurrentRecordingState({
@@ -271,26 +215,6 @@ export function AppShell({
         return;
     }
   }
-
-  async function refreshHistoryAfterDictation(result: DictationResult) {
-    if (result.historyEntry) {
-      setHistory((current) => [
-        result.historyEntry!,
-        ...current.filter((entry) => entry.id !== result.historyEntry!.id),
-      ]);
-      return;
-    }
-
-    try {
-      const entries = await activeBridge.loadHistory();
-      setHistory(entries);
-    } catch {
-      // The dictation already completed. A history refresh failure is local UI
-      // feedback and must not turn a successful transcription into an error.
-    }
-  }
-
-  const dictationButtonDisabled = dictationActionPending || currentRecordingState.status === "transcribing";
 
   return (
     <main className="app-shell">
@@ -303,10 +227,6 @@ export function AppShell({
           </div>
         </div>
         <div className="header-actions">
-          <button className="settings-button" onClick={openSystemCheck} type="button" aria-label="Abrir prueba del sistema">
-            <CheckIcon />
-            <span>Prueba del sistema</span>
-          </button>
           <button className="settings-button" onClick={openSettings} type="button" aria-label="Abrir configuración">
             <SettingsIcon />
             <span>Configuración</span>
@@ -323,52 +243,20 @@ export function AppShell({
             Tu audio se procesa en este equipo y nunca se guarda. Empieza cuando quieras.
           </p>
           <StatusBubble state={currentRecordingState} />
-          <div className="dictation-action-row">
-            <DictationControl
-              disabled={dictationButtonDisabled}
-              onClick={() => void handleDictation()}
-              pending={dictationActionPending}
-              state={currentRecordingState}
-            />
-          </div>
-          <div className="shortcut-row">
-            <span>Atajo global</span>
-            <kbd>{currentSettings.shortcut.replace("CommandOrControl", "⌘/Ctrl").replaceAll("+", " + ")}</kbd>
-          </div>
-          {shortcutRegistrationError && <p className="error-message shortcut-error">Atajo global: {shortcutRegistrationError}</p>}
         </section>
-        <p className="mode-note">Modo: {modeLabel}</p>
-
-        <section className="history-panel" aria-labelledby="history-title">
-          <div className="history-heading">
-            <div>
-              <p className="eyebrow">SÓLO TEXTO</p>
-              <h2 id="history-title">Historial</h2>
-            </div>
-            <span className="history-retention">Se conserva en este equipo</span>
-          </div>
-          {historyError && <p className="error-message">{historyError}</p>}
-          {history.length === 0 ? (
-            <p className="history-empty">Todavía no hay dictados guardados.</p>
-          ) : (
-            <ul className="history-list">
-              {history.map((entry) => (
-                <li className="history-entry" key={String(entry.id)}>
-                  <div className="history-entry__body">
-                    <p>{entry.text}</p>
-                    <time dateTime={getHistoryTimestamp(entry)}>{formatHistoryDate(getHistoryTimestamp(entry))}</time>
-                  </div>
-                  <div className="history-entry__actions">
-                    <button className="text-button" onClick={() => void copyEntry(entry)} type="button">
-                      {copiedEntryId === entry.id ? "Copiado" : "Copiar"}
-                    </button>
-                    <button className="text-button text-button--danger" onClick={() => void deleteEntry(entry)} type="button">Borrar</button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <DictationTester
+          ref={testerRef}
+          settings={currentSettings}
+          onSettingsChange={handleTesterSettingsChange}
+          state={currentRecordingState}
+          pending={dictationActionPending}
+          onDictationClick={() => void handleDictation()}
+          resultText={dictationResult?.text}
+          resultId={dictationResult?.id}
+          shortcutRegistrationError={shortcutRegistrationError}
+          onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}
+        />
+        {settingsSaveError && <p className="error-message" role="alert">{settingsSaveError}</p>}
       </div>
 
       {settingsOpen && (
@@ -391,49 +279,12 @@ export function AppShell({
               <span><strong>English</strong><small>Interfaz y dictado en inglés</small></span>
             </label>
           </fieldset>
-          <fieldset className="choice-list">
-            <legend>Modo de grabación</legend>
-            <label className="choice-card">
-              <input checked={draftSettings.mode === "hold"} name="settings-mode" onChange={() => setDraftSettings((current) => ({ ...current, mode: "hold" }))} type="radio" value="hold" />
-              <span><strong>Mantener pulsado</strong><small>Graba mientras mantienes el atajo</small></span>
-            </label>
-            <label className="choice-card">
-              <input checked={draftSettings.mode === "toggle"} name="settings-mode" onChange={() => setDraftSettings((current) => ({ ...current, mode: "toggle" }))} type="radio" value="toggle" />
-              <span><strong>Pulsar para alternar</strong><small>Una pulsación empieza y otra termina</small></span>
-            </label>
-          </fieldset>
-          <ShortcutField
-            value={draftSettings.shortcut}
-            onChange={(shortcut) => setDraftSettings((current) => ({ ...current, shortcut }))}
-            onError={(message) => setSettingsError(message ?? null)}
-          />
           {settingsError && <p className="error-message">{settingsError}</p>}
           <div className="settings-panel__actions">
             <button className="secondary-button" onClick={() => setSettingsOpen(false)} type="button">Cancelar</button>
             <button className="primary-button" disabled={savingSettings} onClick={() => void saveSettings()} type="button">{savingSettings ? "Guardando…" : "Guardar configuración"}</button>
+            <button className="secondary-button" onClick={restartOnboarding} type="button">Reiniciar onboarding</button>
           </div>
-        </section>
-      )}
-
-      {systemCheckOpen && (
-        <section className="settings-panel system-check-panel" role="dialog" aria-label="Prueba del sistema">
-          <div className="settings-panel__header">
-            <div>
-              <p className="eyebrow">PRUEBA LOCAL</p>
-              <h2>Prueba del sistema</h2>
-            </div>
-            <button className="icon-button" onClick={() => setSystemCheckOpen(false)} type="button" aria-label="Cerrar prueba del sistema"><CloseIcon /></button>
-          </div>
-          <p className="system-check-intro">Comprueba modelo, micrófono, portapapeles y pegado sin enviar ni conservar audio o texto.</p>
-          <button className="primary-button" disabled={checkingSystem} onClick={() => void runSystemCheck()} type="button">
-            {checkingSystem ? "Comprobando…" : "Ejecutar comprobaciones"}
-          </button>
-          {systemCheck.error && <p className="error-message">{systemCheck.error}</p>}
-          {systemCheck.model && <SystemCheckRow label="Modelo Whisper" ok={systemCheck.model.installed && systemCheck.model.checksumValid} detail={systemCheck.model.installed && systemCheck.model.checksumValid ? "Modelo validado y listo para dictar." : "Falta el modelo o no pasó la validación; vuelve a ejecutar el onboarding."} />}
-          {systemCheck.microphone && <SystemCheckRow label="Micrófono" ok={systemCheck.microphone.ok} detail={systemCheck.microphone.message} />}
-          {systemCheck.clipboard && <SystemCheckRow label="Portapapeles" ok={systemCheck.clipboard.ok} detail={systemCheck.clipboard.message} />}
-          {systemCheck.paste && <SystemCheckRow label="Pegado en app activa" ok={systemCheck.paste.ok} detail={systemCheck.paste.message} />}
-          <p className="system-check-note">El botón principal sirve para comprobar el dictado en esta ventana. Para el atajo global, prueba la tecla configurada desde otra aplicación una vez que esté disponible en tu sesión.</p>
         </section>
       )}
 
@@ -442,21 +293,6 @@ export function AppShell({
         <span>v0.1.5</span>
       </footer>
     </main>
-  );
-}
-
-function SystemCheckRow({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
-  return <div className={`system-check-row ${ok ? "system-check-row--ok" : "system-check-row--error"}`}>
-    <strong>{ok ? "Listo" : "Requiere atención"} · {label}</strong>
-    <span>{detail}</span>
-  </div>;
-}
-
-function CheckIcon() {
-  return (
-    <svg aria-hidden="true" fill="none" height="16" stroke="currentColor" strokeLinecap="square" strokeWidth="2" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg">
-      <path d="m5 12 4 4L19 6" stroke="currentColor" strokeLinecap="square" strokeWidth="2" />
-    </svg>
   );
 }
 
@@ -479,21 +315,4 @@ function CloseIcon() {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function formatHistoryDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("es-AR", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(date);
-}
-
-function getHistoryTimestamp(entry: HistoryEntry): string {
-  if (entry.createdAt) return entry.createdAt;
-  if (entry.timestamp === undefined || entry.timestamp === null) return "";
-  const numericTimestamp = typeof entry.timestamp === "number" ? entry.timestamp : Number(entry.timestamp);
-  if (Number.isFinite(numericTimestamp)) return new Date(numericTimestamp).toISOString();
-  return String(entry.timestamp);
 }

@@ -168,6 +168,14 @@ export interface ShortcutFieldProps {
   disabled?: boolean;
 }
 
+export function normalizeShortcutForPlatform(
+  shortcut: string,
+  platform = typeof navigator === "undefined" ? "" : navigator.platform,
+): string {
+  const modifier = /mac/i.test(platform) ? "Command" : "Ctrl";
+  return shortcut.replace("CommandOrControl", modifier);
+}
+
 export function ShortcutField({
   value,
   onChange,
@@ -247,9 +255,10 @@ export async function probeGlobalShortcut(shortcut: string): Promise<void> {
   if (typeof window === "undefined" || !(window as TauriWindow).__TAURI_INTERNALS__) return;
 
   const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
+  const normalizedShortcut = normalizeShortcutForPlatform(shortcut);
   try {
-    await register(shortcut, () => undefined);
+    await register(normalizedShortcut, () => undefined);
   } finally {
-    await unregister(shortcut);
+    await unregister(normalizedShortcut);
   }
 }

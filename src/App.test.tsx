@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import { DEFAULT_SETTINGS, type AppSettings } from "./domain/settings";
 import type { ChamuBridge, HistoryEntry } from "./native/commands";
@@ -38,5 +38,23 @@ describe("App", () => {
     unmount();
     render(<App bridge={bridge} />);
     await waitFor(() => expect(screen.getByRole("heading", { name: /habla\. chamu escribe/i })).toBeVisible());
+  });
+
+  it("resets only the onboarding marker from settings", async () => {
+    window.localStorage.setItem("chamu:onboarding-complete", "true");
+    const bridge = makeBridge();
+    render(<App bridge={bridge} />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: /habla\. chamu escribe/i })).toBeVisible());
+    await waitFor(() => expect(bridge.loadSettings).toHaveBeenCalledOnce());
+    const loadSettingsCalls = vi.mocked(bridge.loadSettings).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    fireEvent.click(screen.getByRole("button", { name: /reiniciar onboarding/i }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: /prepara el modelo/i })).toBeVisible());
+    expect(window.localStorage.getItem("chamu:onboarding-complete")).toBeNull();
+    expect(bridge.saveSettings).not.toHaveBeenCalled();
+    expect(vi.mocked(bridge.loadSettings).mock.calls.length).toBe(loadSettingsCalls);
   });
 });

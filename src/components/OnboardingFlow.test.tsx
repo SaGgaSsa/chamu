@@ -12,6 +12,13 @@ import {
 } from "../native/commands";
 import { OnboardingFlow } from "./OnboardingFlow";
 
+const shortcutPlugin = vi.hoisted(() => ({
+  register: vi.fn(async () => undefined),
+  unregister: vi.fn(async () => undefined),
+}));
+
+vi.mock("@tauri-apps/plugin-global-shortcut", () => shortcutPlugin);
+
 function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
   const model: ModelStatus = {
     id: "base",
@@ -47,6 +54,12 @@ function continueStep() {
 }
 
 describe("OnboardingFlow", () => {
+  afterEach(() => {
+    shortcutPlugin.register.mockClear();
+    shortcutPlugin.unregister.mockClear();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
   it("shows model and language choices with a short local privacy note on the first screen", async () => {
     render(<OnboardingFlow bridge={makeBridge()} onComplete={vi.fn()} />);
 
@@ -183,15 +196,28 @@ describe("OnboardingFlow", () => {
     await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
     continueStep();
 
-    expect(screen.getByRole("heading", { name: /atajo y modo/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /probar atajo/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /probar micrófono/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /probar pegado/i })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /prueba el dictado/i })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: /texto de prueba/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /probar atajo|probar micrófono|probar pegado/i })).toBeNull();
 
     fireEvent.click(screen.getByRole("radio", { name: /pulsar para alternar/i }));
     continueStep();
 
     await waitFor(() => expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" })));
     expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" }));
+  });
+
+  it("registers the selected shortcut for the onboarding tester", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "Linux x86_64" });
+
+    render(<OnboardingFlow bridge={makeBridge()} onComplete={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
+    continueStep();
+
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledWith(
+      "Ctrl+Shift+Space",
+      expect.any(Function),
+    ));
   });
 });

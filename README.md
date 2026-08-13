@@ -55,10 +55,28 @@ npm ci
 npm test
 npm run typecheck
 npm run build
-npm run tauri dev
+npm run tauri -- dev
 ```
 
 El servidor Vite usa `127.0.0.1:1420`, el mismo puerto que `build.devUrl` de Tauri. El puerto es estricto para evitar que Vite elija otro silenciosamente.
+
+Para iniciar la aplicación Tauri en desarrollo:
+
+```bash
+npm ci
+npm run tauri -- dev
+```
+
+### Prueba manual del probador
+
+1. Haz foco en «Texto de prueba».
+2. Pulsa el botón de dictado.
+3. Habla y pulsa el botón otra vez para detener la grabación.
+4. Comprueba que el texto aparece en el área y en el portapapeles.
+5. Repite la prueba con el atajo global.
+6. Comprueba que el texto se inserta en el área con foco.
+
+El registro del atajo global puede fallar si el atajo ya está ocupado. También puede fallar si la sesión gráfica o el compositor no permite registrar atajos globales.
 
 ## Releases y actualizaciones
 

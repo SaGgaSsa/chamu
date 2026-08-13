@@ -3,15 +3,18 @@ import {
   DEFAULT_SETTINGS,
   type AppLanguage,
   type AppSettings,
-  type RecordingMode,
 } from "../domain/settings";
+import { createRecordingState, type RecordingState } from "../domain/recording";
 import {
   nativeBridge,
   type ChamuBridge,
+  type DictationResult,
   type ModelDownloadProgress,
   type ModelStatus,
 } from "../native/commands";
-import { ShortcutField, probeGlobalShortcut } from "./ShortcutField";
+import { DictationTester, type DictationTesterHandle } from "./DictationTester";
+import { normalizeShortcutForPlatform } from "./ShortcutField";
+import { StatusBubble } from "./StatusBubble";
 
 type OnboardingStep = "model" | "setup";
 
@@ -39,10 +42,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function formatShortcut(shortcut: string): string {
-  return shortcut.replace("CommandOrControl", "Ctrl").replaceAll("+", " + ");
-}
-
 export function OnboardingFlow({
   bridge = nativeBridge,
   initialSettings = DEFAULT_SETTINGS,
@@ -55,14 +54,19 @@ export function OnboardingFlow({
   const [downloadConsent, setDownloadConsent] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [microphoneResult, setMicrophoneResult] = useState<string | null>(null);
-  const [shortcutResult, setShortcutResult] = useState<string | null>(null);
-  const [shortcutError, setShortcutError] = useState<string | null>(null);
-  const [pasteResult, setPasteResult] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [dictationState, setDictationState] = useState<RecordingState>(createRecordingState);
+  const [dictationPending, setDictationPending] = useState(false);
+  const [dictationResult, setDictationResult] = useState<{
+    text?: DictationResult["text"];
+    id: string | number;
+  }>();
   const unlistenRef = useRef<ProgressListener | null>(null);
   const disposedRef = useRef(false);
+  const testerRef = useRef<DictationTesterHandle>(null);
+  const dictationResultCounterRef = useRef(0);
+  const shortcutHandlerRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -167,32 +171,108 @@ export function OnboardingFlow({
     }
   }
 
-  async function testMicrophone() {
+  async function handleDictation() {
+    if (dictationPending || dictationState.status === "transcribing") return;
+    if (dictationState.status === "recording") {
+      await stopDictation();
+      return;
+    }
+
+    testerRef.current?.prepareForDictation();
+    await startDictation();
+  }
+
+  async function startDictation() {
+    setDictationPending(true);
     try {
-      const result = await bridge.testMicrophone();
-      setMicrophoneResult(result.message);
+      if (!bridge.startDictation) throw new Error("El dictado nativo no está disponible");
+      const result = await bridge.startDictation();
+      applyDictationResult(result, "recording");
     } catch (error: unknown) {
-      setMicrophoneResult(getErrorMessage(error, "No se pudo probar el micrófono"));
+      setDictationState({ status: "error", message: getErrorMessage(error, "No se pudo iniciar el dictado") });
+    } finally {
+      setDictationPending(false);
     }
   }
 
-  async function testShortcut() {
-    setShortcutError(null);
+  shortcutHandlerRef.current = (state) => {
+    if (state === "Pressed") {
+      if (settings.mode === "toggle" || dictationState.status !== "recording") {
+        void handleDictation();
+      }
+      return;
+    }
+    if (settings.mode === "hold" && dictationState.status === "recording") {
+      void stopDictation();
+    }
+  };
+
+  useEffect(() => {
+    if (step !== "setup" || typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+
+    let disposed = false;
+    const shortcut = normalizeShortcutForPlatform(settings.shortcut);
+    let registered = false;
+    let unregisterShortcut: ((shortcut: string) => Promise<void>) | undefined;
+
+    const registration = import("@tauri-apps/plugin-global-shortcut").then(async ({ register, unregister }) => {
+      unregisterShortcut = unregister;
+      if (disposed) return;
+      await register(shortcut, (event) => shortcutHandlerRef.current(event.state));
+      registered = true;
+      if (disposed) await unregister(shortcut);
+    }).catch((error: unknown) => {
+      if (!disposed) setSaveError(getErrorMessage(error, "No se pudo registrar el atajo global"));
+    });
+
+    return () => {
+      disposed = true;
+      void registration.then(async () => {
+        if (registered && unregisterShortcut) await unregisterShortcut(shortcut);
+      }).catch(() => undefined);
+    };
+  }, [settings.shortcut, step]);
+
+  async function stopDictation() {
+    setDictationState({ status: "transcribing" });
+    setDictationPending(true);
     try {
-      await probeGlobalShortcut(settings.shortcut);
-      setShortcutResult(`Atajo disponible: ${formatShortcut(settings.shortcut)}.`);
+      if (!bridge.stopDictation) throw new Error("El dictado nativo no está disponible");
+      const result = await bridge.stopDictation();
+      applyDictationResult(result, "transcribing");
     } catch (error: unknown) {
-      setShortcutResult(null);
-      setShortcutError(getErrorMessage(error, "El sistema rechazó el atajo"));
+      setDictationState({ status: "error", message: getErrorMessage(error, "No se pudo transcribir el dictado") });
+    } finally {
+      setDictationPending(false);
     }
   }
 
-  async function testPaste() {
-    try {
-      const [clipboard, paste] = await Promise.all([bridge.testClipboard(), bridge.testPaste()]);
-      setPasteResult(clipboard.ok && paste.ok ? "Portapapeles y pegado listos." : clipboard.ok ? paste.message : clipboard.message);
-    } catch (error: unknown) {
-      setPasteResult(getErrorMessage(error, "No se pudo probar el pegado"));
+  function applyDictationResult(result: DictationResult | void, fallbackStatus: "recording" | "transcribing") {
+    if (!result) {
+      setDictationState({ status: fallbackStatus });
+      return;
+    }
+
+    switch (result.status) {
+      case "ready":
+        setDictationState({ status: "ready" });
+        return;
+      case "recording":
+        setDictationState({ status: "recording" });
+        return;
+      case "transcribing":
+        setDictationState({ status: "transcribing" });
+        return;
+      case "copied":
+        setDictationState({ status: "copied" });
+        setDictationResult({
+          text: result.text,
+          id: result.historyEntry?.id ?? ++dictationResultCounterRef.current,
+        });
+        return;
+      case "error":
+        setDictationState({ status: "error", message: result.message ?? "No se pudo completar el dictado" });
+        return;
     }
   }
 
@@ -255,20 +335,19 @@ export function OnboardingFlow({
             </>
           ) : (
             <>
-              <h2 id="onboarding-title">Atajo y modo</h2>
-              <p className="welcome-copy">Elige cómo iniciar el dictado. Las pruebas son opcionales.</p>
-              <ShortcutField value={settings.shortcut} onChange={(shortcut) => setSettings((current) => ({ ...current, shortcut }))} onError={(message) => setShortcutError(message ?? null)} />
-              <button className="secondary-button" onClick={() => void testShortcut()} type="button">Probar atajo</button>
-              {shortcutResult && <p className="success-message">{shortcutResult}</p>}
-              {shortcutError && <p className="error-message">{shortcutError}</p>}
-              <fieldset className="choice-list">
-                <legend>Modo de grabación</legend>
-                <label className="choice-card"><input checked={settings.mode === "hold"} name="mode" onChange={() => setSettings((current) => ({ ...current, mode: "hold" as RecordingMode }))} type="radio" value="hold" /><span><strong>Mantener pulsado</strong><small>Graba mientras mantienes el atajo</small></span></label>
-                <label className="choice-card"><input checked={settings.mode === "toggle"} name="mode" onChange={() => setSettings((current) => ({ ...current, mode: "toggle" as RecordingMode }))} type="radio" value="toggle" /><span><strong>Pulsar para alternar</strong><small>Una pulsación empieza y otra termina</small></span></label>
-              </fieldset>
-              <div className="alternative-list"><button className="secondary-button" onClick={() => void testMicrophone()} type="button">Probar micrófono</button><button className="secondary-button" onClick={() => void testPaste()} type="button">Probar pegado</button></div>
-              {microphoneResult && <p className="success-message">{microphoneResult}</p>}
-              {pasteResult && <p className="success-message">{pasteResult}</p>}
+              <h2 id="onboarding-title">Configura el dictado</h2>
+              <p className="welcome-copy">Prueba el dictado local y elige cómo iniciar la grabación.</p>
+              <StatusBubble state={dictationState} />
+              <DictationTester
+                ref={testerRef}
+                settings={settings}
+                onSettingsChange={setSettings}
+                state={dictationState}
+                pending={dictationPending}
+                onDictationClick={() => void handleDictation()}
+                resultText={dictationResult?.text}
+                resultId={dictationResult?.id}
+              />
               {saveError && <p className="error-message">{saveError}</p>}
             </>
           )}

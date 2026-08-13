@@ -134,6 +134,10 @@ struct BridgeHistoryEntry {
 #[serde(rename_all = "camelCase")]
 struct DictationResult {
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history_entry: Option<BridgeHistoryEntry>,
     message: Option<String>,
 }
 
@@ -479,45 +483,77 @@ fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, St
         capture.take();
         return Err(error);
     }
-    Ok(DictationResult { status: "recording".into(), message: None })
+    Ok(DictationResult {
+        status: "recording".into(),
+        text: None,
+        history_entry: None,
+        message: None,
+    })
+}
+
+fn recover_dictation_after_error(state: &RuntimeState) {
+    if let Ok(mut recording) = state.recording.lock() {
+        recording.mark_error();
+    }
 }
 
 #[tauri::command]
 fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
-    let capture = state.capture.lock().map_err(|_| "No se pudo detener el micrófono".to_string())?.take()
-        .ok_or_else(|| "No hay un dictado en curso".to_string())?;
-    let mut samples = capture.stop()?;
-    state.recording.lock().map_err(|_| "No se pudo actualizar el estado".to_string())?.stop_without_audio()?;
-    if samples.is_empty() {
-        return Err("No se capturó audio; revisa el permiso del micrófono".into());
+    let mut capture_extracted = false;
+    let result = (|| -> Result<DictationResult, String> {
+        let capture = state.capture.lock().map_err(|_| "No se pudo detener el micrófono".to_string())?.take()
+            .ok_or_else(|| "No hay un dictado en curso".to_string())?;
+        capture_extracted = true;
+        let mut samples = capture.stop()?;
+        state.recording.lock().map_err(|_| "No se pudo actualizar el estado".to_string())?.stop_without_audio()?;
+        if samples.is_empty() {
+            return Err("No se capturó audio; revisa el permiso del micrófono".into());
+        }
+        let model = model_catalog().into_iter().find(|model| model.id == "base")
+            .ok_or_else(|| "No se encontró el modelo base".to_string())?;
+        let model_path = model_install_path(&model)?;
+        let validation = validate_model_checksum(&model_path, &model.sha256)?;
+        if !validation.is_valid {
+            samples.fill(0);
+            return Err("El checksum SHA-256 del modelo no coincide; descárgalo otra vez.".into());
+        }
+        let language = match state
+            .settings
+            .lock()
+            .map_err(|_| "No se pudo leer la configuración".to_string())?
+            .language
+            .as_str()
+        {
+            "en" => "en",
+            _ => "es",
+        };
+        let text = transcribe_with_embedded_whisper(&model_path, language, &mut samples)?;
+        if text.is_empty() { return Err("whisper.cpp no devolvió texto".into()); }
+        let timestamp = now_unix_millis();
+        let mut history = state.history.lock().map_err(|_| "No se pudo abrir el historial".to_string())?;
+        if history.is_none() { *history = Some(HistoryStore::open(history_path()?)?); }
+        let history_id = history
+            .as_mut()
+            .expect("history initialized")
+            .insert(text.clone(), timestamp)?;
+        let history_entry = history_entry_for_bridge(HistoryEntry {
+            id: history_id,
+            text: text.clone(),
+            timestamp,
+        });
+        send_to_clipboard(&text)?;
+        state.recording.lock().map_err(|_| "No se pudo actualizar el estado".to_string())?.mark_copied();
+        Ok(DictationResult {
+            status: "copied".into(),
+            text: Some(text),
+            history_entry: Some(history_entry),
+            message: Some("Texto copiado al portapapeles local".into()),
+        })
+    })();
+    if capture_extracted && result.is_err() {
+        recover_dictation_after_error(&state);
     }
-    let model = model_catalog().into_iter().find(|model| model.id == "base")
-        .ok_or_else(|| "No se encontró el modelo base".to_string())?;
-    let model_path = model_install_path(&model)?;
-    let validation = validate_model_checksum(&model_path, &model.sha256)?;
-    if !validation.is_valid {
-        samples.fill(0);
-        return Err("El checksum SHA-256 del modelo no coincide; descárgalo otra vez.".into());
-    }
-    let language = match state
-        .settings
-        .lock()
-        .map_err(|_| "No se pudo leer la configuración".to_string())?
-        .language
-        .as_str()
-    {
-        "en" => "en",
-        _ => "es",
-    };
-    let text = transcribe_with_embedded_whisper(&model_path, language, &mut samples)?;
-    if text.is_empty() { return Err("whisper.cpp no devolvió texto".into()); }
-    let timestamp = now_unix_millis();
-    let mut history = state.history.lock().map_err(|_| "No se pudo abrir el historial".to_string())?;
-    if history.is_none() { *history = Some(HistoryStore::open(history_path()?)?); }
-    history.as_mut().expect("history initialized").insert(text.clone(), timestamp)?;
-    send_to_clipboard(&text)?;
-    state.recording.lock().map_err(|_| "No se pudo actualizar el estado".to_string())?.mark_copied();
-    Ok(DictationResult { status: "copied".into(), message: Some("Texto copiado al portapapeles local".into()) })
+    result
 }
 
 #[tauri::command]
@@ -1185,5 +1221,55 @@ mod tests {
     fn model_download_read_timeout_is_shorter_than_total_timeout() {
         assert_eq!(MODEL_DOWNLOAD_READ_TIMEOUT, Duration::from_secs(5));
         assert!(MODEL_DOWNLOAD_READ_TIMEOUT < Duration::from_secs(60));
+    }
+
+    #[test]
+    fn copied_dictation_result_contains_transcribed_text_and_history_entry() {
+        let result = DictationResult {
+            status: "copied".into(),
+            text: Some("texto de prueba".into()),
+            history_entry: Some(history_entry_for_bridge(HistoryEntry {
+                id: 42,
+                text: "texto de prueba".into(),
+                timestamp: 1_700_000_000_000,
+            })),
+            message: Some("Texto copiado al portapapeles local".into()),
+        };
+
+        assert_eq!(result.status, "copied");
+        assert_eq!(result.text.as_deref(), Some("texto de prueba"));
+        assert_eq!(
+            result
+                .history_entry
+                .as_ref()
+                .map(|entry| entry.text.as_str()),
+            Some("texto de prueba")
+        );
+
+        let json = serde_json::to_value(result).expect("serialize dictation result");
+        assert!(json.get("historyEntry").is_some());
+        assert!(json.get("history_entry").is_none());
+    }
+
+    #[test]
+    fn dictation_error_after_capture_allows_a_new_dictation() {
+        let state = RuntimeState::default();
+        {
+            let mut recording = state.recording.lock().expect("lock recording");
+            recording.start().expect("start recording");
+            recording
+                .stop_without_audio()
+                .expect("begin transcription");
+            assert_eq!(recording.phase(), RecordingPhase::Transcribing);
+        }
+
+        recover_dictation_after_error(&state);
+
+        let mut recording = state.recording.lock().expect("lock recording");
+        assert_eq!(recording.phase(), RecordingPhase::Error);
+        recording
+            .start()
+            .expect("a failed dictation must allow retry");
+        assert_eq!(recording.phase(), RecordingPhase::Recording);
     }
 }

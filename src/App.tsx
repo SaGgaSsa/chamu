@@ -39,9 +39,16 @@ export default function App({ bridge = nativeBridge, forceOnboarding = false }: 
     }
   }
 
+  function restartOnboarding() {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    }
+    setOnboardingComplete(false);
+  }
+
   if (!onboardingComplete) {
     return <OnboardingFlow bridge={bridge} initialSettings={settings} onComplete={completeOnboarding} />;
   }
 
-  return <AppShell bridge={bridge} settings={settings} />;
+  return <AppShell bridge={bridge} settings={settings} onRestartOnboarding={restartOnboarding} />;
 }

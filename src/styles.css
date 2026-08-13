@@ -466,6 +466,101 @@ h2 {
   color: var(--color-status-error);
 }
 
+.dictation-tester {
+  display: flex;
+  width: 100%;
+  max-width: 760px;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 auto;
+  padding: var(--space-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-glass);
+  text-align: left;
+}
+
+.dictation-tester__header {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.dictation-tester__header > div:first-child {
+  min-width: 0;
+}
+
+.dictation-tester__header h2 {
+  overflow: hidden;
+  font-size: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dictation-tester__header .dictation-control {
+  flex: 0 0 auto;
+}
+
+.dictation-tester__label {
+  flex: 0 0 auto;
+  color: var(--color-on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.dictation-tester__text {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  margin: 0;
+  padding: var(--space-3);
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-container-lowest);
+  color: var(--color-on-surface);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.dictation-tester__text:focus {
+  border-color: var(--border-active);
+  outline: 2px solid color-mix(in srgb, var(--color-action) 26%, transparent);
+  outline-offset: 1px;
+}
+
+.dictation-tester__result,
+.dictation-tester > .error-message {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.dictation-tester .choice-list {
+  width: 100%;
+  min-height: 0;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.dictation-tester .choice-card {
+  min-height: 48px;
+  padding-block: var(--space-2);
+}
+
 .dictation-action-row {
   display: flex;
   justify-content: center;
@@ -795,6 +890,11 @@ kbd {
   font-family: var(--font-body);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.dictation-tester .shortcut-field {
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .primary-button,
@@ -1229,6 +1329,103 @@ kbd {
   white-space: nowrap;
 }
 
+/* Main tester layout */
+.app-shell:not(.onboarding-shell) .app-content {
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-4) var(--space-6) var(--space-4);
+}
+
+.app-shell:not(.onboarding-shell) .app-content > .privacy-badge {
+  align-self: center;
+  min-height: 28px;
+  margin-bottom: var(--space-2);
+}
+
+.app-shell:not(.onboarding-shell) .app-content > .welcome-card {
+  display: none;
+}
+
+.app-shell:not(.onboarding-shell) .app-content > .dictation-tester {
+  flex: 1 1 auto;
+}
+
+.onboarding-shell .dictation-tester {
+  flex: 0 0 auto;
+}
+
+.onboarding-shell .dictation-tester__text {
+  min-height: 160px;
+  flex: 0 1 160px;
+}
+
+@media (max-height: 720px) {
+  .app-header {
+    min-height: 60px;
+    padding-block: var(--space-2);
+  }
+
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+  }
+
+  .app-footer {
+    min-height: 44px;
+    padding-block: var(--space-2);
+  }
+
+  .app-shell:not(.onboarding-shell) .app-content {
+    padding-block: var(--space-2);
+  }
+
+  .app-shell:not(.onboarding-shell) .app-content > .privacy-badge {
+    min-height: 24px;
+    margin-bottom: var(--space-1);
+    font-size: 11px;
+  }
+
+  .dictation-tester {
+    gap: var(--space-2);
+    padding: var(--space-4);
+  }
+
+  .dictation-tester__header {
+    gap: var(--space-2);
+  }
+
+  .dictation-tester__header .dictation-control {
+    width: 104px !important;
+    min-width: 104px !important;
+    height: 104px !important;
+    min-height: 104px !important;
+  }
+
+  .dictation-tester__text {
+    padding: var(--space-2);
+    font-size: 14px;
+  }
+
+  .dictation-tester .choice-list {
+    gap: var(--space-1);
+  }
+
+  .dictation-tester .choice-card {
+    min-height: 44px;
+  }
+
+  .dictation-tester .shortcut-field {
+    gap: var(--space-1);
+    padding: var(--space-2);
+  }
+
+  .dictation-tester .shortcut-field__capture {
+    min-height: 40px;
+  }
+}
+
 @keyframes dictation-pulse {
   0% {
     opacity: 0.72;
@@ -1293,6 +1490,40 @@ kbd {
 
   .app-content {
     padding-inline: var(--space-4);
+  }
+
+  .app-shell:not(.onboarding-shell) .app-content {
+    align-items: center;
+    min-height: auto;
+    overflow: visible;
+    padding-block: var(--space-6) calc(var(--space-10) + env(safe-area-inset-bottom));
+  }
+
+  .app-shell:not(.onboarding-shell) .app-content > .privacy-badge {
+    align-self: center;
+    min-height: var(--touch-target);
+    margin-bottom: var(--space-4);
+    font-size: 12px;
+  }
+
+  .dictation-tester {
+    max-width: none;
+    flex: 0 0 auto;
+    padding: var(--space-4);
+  }
+
+  .dictation-tester__header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dictation-tester__header > div:last-child {
+    align-self: center;
+  }
+
+  .dictation-tester__text {
+    min-height: 180px;
+    flex: 0 0 180px;
   }
 
   .app-footer {
@@ -1371,6 +1602,15 @@ kbd {
 
   .welcome-card {
     padding-inline: var(--space-3);
+  }
+
+  .dictation-tester {
+    padding-inline: var(--space-3);
+  }
+
+  .dictation-tester__text {
+    min-height: 160px;
+    flex-basis: 160px;
   }
 
   h2 {

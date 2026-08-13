@@ -4,6 +4,7 @@ import {
   DEFAULT_SHORTCUT,
   ShortcutField,
   normalizeShortcutFromKeyboardEvent,
+  normalizeShortcutForPlatform,
   probeGlobalShortcut,
 } from "./ShortcutField";
 
@@ -121,6 +122,15 @@ describe("probeGlobalShortcut", () => {
     shortcutPlugin.register.mockClear();
     shortcutPlugin.unregister.mockClear();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "Linux x86_64",
+    });
+  });
+
+  it("normalizes the platform modifier while preserving the saved shortcut token", () => {
+    expect(normalizeShortcutForPlatform("CommandOrControl+Shift+A", "MacIntel")).toBe("Command+Shift+A");
+    expect(normalizeShortcutForPlatform("CommandOrControl+Shift+A", "Linux x86_64")).toBe("Ctrl+Shift+A");
   });
 
   it("does nothing in a browser context", async () => {
@@ -134,8 +144,8 @@ describe("probeGlobalShortcut", () => {
 
     await expect(probeGlobalShortcut(DEFAULT_SHORTCUT)).resolves.toBeUndefined();
 
-    expect(shortcutPlugin.register).toHaveBeenCalledWith(DEFAULT_SHORTCUT, expect.any(Function));
-    expect(shortcutPlugin.unregister).toHaveBeenCalledWith(DEFAULT_SHORTCUT);
+    expect(shortcutPlugin.register).toHaveBeenCalledWith("Ctrl+Shift+Space", expect.any(Function));
+    expect(shortcutPlugin.unregister).toHaveBeenCalledWith("Ctrl+Shift+Space");
   });
 
   it("unregisters the shortcut when registration fails", async () => {
@@ -144,6 +154,6 @@ describe("probeGlobalShortcut", () => {
     shortcutPlugin.register.mockRejectedValueOnce(registrationError);
 
     await expect(probeGlobalShortcut(DEFAULT_SHORTCUT)).rejects.toThrow(registrationError);
-    expect(shortcutPlugin.unregister).toHaveBeenCalledWith(DEFAULT_SHORTCUT);
+    expect(shortcutPlugin.unregister).toHaveBeenCalledWith("Ctrl+Shift+Space");
   });
 });
