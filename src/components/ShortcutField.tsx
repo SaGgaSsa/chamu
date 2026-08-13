@@ -257,6 +257,17 @@ export function ShortcutField({
     reportError(result.error ?? "No se pudo leer el atajo.");
   }
 
+  function captureKeyUp(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (!capturing) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const hasModifiers = event.ctrlKey || event.altKey || event.shiftKey || event.metaKey;
+    setCapturePreview(hasModifiers ? modifierPreview(event) : null);
+    clearError();
+  }
+
   return (
     <div className="shortcut-field">
       <span className="shortcut-field__label">{label}</span>
@@ -272,6 +283,7 @@ export function ShortcutField({
         disabled={disabled}
         onClick={startCapture}
         onKeyDown={captureKey}
+        onKeyUp={captureKeyUp}
       >
         {capturing ? "Pulsa el atajo…" : "Capturar atajo"}
       </button>

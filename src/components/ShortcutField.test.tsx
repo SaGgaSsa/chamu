@@ -143,6 +143,33 @@ describe("ShortcutField", () => {
     expect(onCapturingChange).toHaveBeenLastCalledWith(true);
   });
 
+  it("removes the modifier preview when Ctrl is released", () => {
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    render(<ShortcutField value={DEFAULT_SHORTCUT} onChange={onChange} onError={onError} />);
+
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    const capturingButton = screen.getByRole("button", { name: /pulsa el atajo/i });
+    fireEvent.keyDown(capturingButton, {
+      code: "ControlLeft",
+      key: "Control",
+      ctrlKey: true,
+    });
+    expect(screen.getByText(/ctrl.*…/i)).toBeVisible();
+
+    fireEvent.keyUp(capturingButton, {
+      code: "ControlLeft",
+      key: "Control",
+      ctrlKey: false,
+    });
+
+    expect(screen.getByText(DEFAULT_SHORTCUT)).toBeVisible();
+    expect(screen.getByRole("button", { name: /pulsa el atajo/i })).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("cancels capture with Escape and ignores a later main key", () => {
     const onChange = vi.fn();
     const onCapturingChange = vi.fn();
