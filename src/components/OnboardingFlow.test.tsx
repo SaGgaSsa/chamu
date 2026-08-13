@@ -137,6 +137,44 @@ describe("OnboardingFlow", () => {
     expect((await screen.findAllByText(/descarga cancelada/i))[0]).toBeVisible();
   });
 
+  it("unlistens once when a download reports a terminal failure", async () => {
+    const missing: ModelStatus = {
+      id: "base",
+      name: "Whisper base multilingüe",
+      installed: false,
+      checksumValid: false,
+      sizeMiB: 142,
+    };
+    let progressListener: ((progress: ModelDownloadProgress) => void) | undefined;
+    const unlisten = vi.fn();
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async () => missing),
+      onModelDownloadProgress: vi.fn(async (listener) => {
+        progressListener = listener;
+        return unlisten;
+      }),
+    });
+    const { unmount } = render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /descargar modelo/i })).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: /descargar modelo/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirmar descarga/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /cancelar descarga/i })).toBeVisible());
+
+    await act(async () => {
+      progressListener?.({
+        modelId: "base",
+        phase: "failed",
+        downloadedBytes: 0,
+        message: "No se pudo descargar el modelo",
+      });
+    });
+
+    await waitFor(() => expect(unlisten).toHaveBeenCalledOnce());
+    unmount();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
   it("moves to the second screen after a validated model and saves without optional tests", async () => {
     const bridge = makeBridge();
     const onComplete = vi.fn();

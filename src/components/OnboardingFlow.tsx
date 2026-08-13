@@ -17,6 +17,11 @@ type OnboardingStep = "model" | "setup";
 
 const MODEL_ID = "base";
 
+interface ProgressListener {
+  token: symbol;
+  unlisten?: () => void;
+}
+
 export interface OnboardingFlowProps {
   bridge?: ChamuBridge;
   initialSettings?: AppSettings;
@@ -56,7 +61,8 @@ export function OnboardingFlow({
   const [pasteResult, setPasteResult] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
+  const unlistenRef = useRef<ProgressListener | null>(null);
+  const disposedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,9 +76,23 @@ export function OnboardingFlow({
     };
   }, [bridge]);
 
-  useEffect(() => () => {
-    unlistenRef.current?.();
+  function releaseProgressListener(token?: symbol) {
+    const listener = unlistenRef.current;
+    if (!listener || (token && listener.token !== token)) return;
     unlistenRef.current = null;
+    try {
+      listener.unlisten?.();
+    } catch {
+      // The listener is detached from the component lifecycle.
+    }
+  }
+
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+      releaseProgressListener();
+    };
   }, []);
 
   const modelReady = Boolean(model?.installed && model.checksumValid);
@@ -90,20 +110,24 @@ export function OnboardingFlow({
     }
   }
 
-  async function handleDownloadProgress(progress: ModelDownloadProgress) {
+  async function handleDownloadProgress(progress: ModelDownloadProgress, token: symbol) {
+    if (unlistenRef.current?.token !== token) return;
     if (progress.modelId !== MODEL_ID) return;
     setDownloadProgress(progress);
     if (progress.phase === "failed") {
+      releaseProgressListener(token);
       setDownloading(false);
       setModelError(progress.message);
       return;
     }
     if (progress.phase === "cancelled") {
+      releaseProgressListener(token);
       setDownloading(false);
       setModelError(progress.message);
       return;
     }
     if (progress.phase === "completed") {
+      releaseProgressListener(token);
       setDownloading(false);
       setDownloadConsent(false);
       await refreshModel();
@@ -114,14 +138,22 @@ export function OnboardingFlow({
     if (!downloadConsent || downloading) return;
     setModelError(null);
     setDownloadProgress(null);
+    releaseProgressListener();
+    const listenerToken = Symbol("model-download-progress");
+    unlistenRef.current = { token: listenerToken };
     try {
-      unlistenRef.current?.();
-      unlistenRef.current = await bridge.onModelDownloadProgress((progress) => {
-        void handleDownloadProgress(progress);
+      const unlisten = await bridge.onModelDownloadProgress((progress) => {
+        void handleDownloadProgress(progress, listenerToken);
       });
+      if (disposedRef.current || unlistenRef.current?.token !== listenerToken) {
+        unlisten();
+        return;
+      }
+      unlistenRef.current.unlisten = unlisten;
       setDownloading(true);
       await bridge.startModelDownload(MODEL_ID);
     } catch (error: unknown) {
+      releaseProgressListener(listenerToken);
       setDownloading(false);
       setModelError(getErrorMessage(error, "No se pudo iniciar la descarga"));
     }

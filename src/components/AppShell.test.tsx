@@ -5,6 +5,13 @@ import { AppShell } from "./AppShell";
 import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
 import type { ChamuBridge, DictationResult, HistoryEntry } from "../native/commands";
 
+const shortcutPlugin = vi.hoisted(() => ({
+  register: vi.fn(async () => undefined),
+  unregister: vi.fn(async () => undefined),
+}));
+
+vi.mock("@tauri-apps/plugin-global-shortcut", () => shortcutPlugin);
+
 function makeBridge(): ChamuBridge {
   return {
     loadSettings: vi.fn(async () => DEFAULT_SETTINGS),
@@ -161,5 +168,36 @@ describe("AppShell", () => {
       expect(screen.getByRole("status")).toHaveTextContent("Error");
       expect(screen.getByText("No se pudo abrir el micrófono")).toBeVisible();
     });
+  });
+
+  it("unregisters a shortcut after a pending registration resolves during unmount", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const lifecycle: string[] = [];
+    let resolveRegister: (() => void) | undefined;
+    const registerPromise = new Promise<undefined>((resolve) => {
+      resolveRegister = () => {
+        lifecycle.push("registered");
+        resolve(undefined);
+      };
+    });
+    shortcutPlugin.register.mockImplementationOnce(() => registerPromise);
+    shortcutPlugin.unregister.mockImplementationOnce(async () => {
+      lifecycle.push("unregistered");
+    });
+
+    const { unmount } = render(<AppShell bridge={makeBridge()} />);
+
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledWith(
+      DEFAULT_SETTINGS.shortcut,
+      expect.any(Function),
+    ));
+    unmount();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shortcutPlugin.unregister).not.toHaveBeenCalled();
+
+    resolveRegister?.();
+
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledWith(DEFAULT_SETTINGS.shortcut));
+    expect(lifecycle).toEqual(["registered", "unregistered"]);
   });
 });
