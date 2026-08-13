@@ -38,3 +38,29 @@ El registro host se intentará una sola vez por conexión del portal. El código
 - Rust: el error de registro conserva el mensaje del portal.
 - Node: el comando de desarrollo instala la entrada en el directorio XDG simulado y no toca otras rutas.
 - Manual: ejecutar `npm run tauri -- dev`, seleccionar mantener pulsado y aceptar el diálogo del portal. El estado debe cambiar a registrado.
+
+## Resultado de validación integrada
+
+Validación ejecutada el 2026-08-13 desde el worktree de la rama
+`fix/wayland-host-registration`.
+
+- Frontend: `npm test && npm run typecheck && npm run build` pasó. Vitest
+  informó 12 archivos y 96 pruebas sin fallos. TypeScript y Vite terminaron
+  con salida 0.
+- Rust: `cargo test -q` pasó. El binario principal informó 54 pruebas sin
+  fallos. La salida conserva warnings `dead_code` existentes.
+- Preparación local: `npm run prepare:desktop-entry` copió
+  `com.chamu.desktop.desktop` a `~/.local/share/applications/`. La llamada
+  `Registry.Register` devolvió `()` y no informó `App info not found`.
+- La llamada `gdbus` no prueba por sí sola el requisito de conexión compartida.
+  Cada proceso `gdbus` abre su propia conexión D-Bus. La llamada confirma que
+  el portal acepta `com.chamu.desktop` con la entrada instalada. No confirma
+  que el proceso Tauri use esa misma conexión para `Registry.Register` y
+  `GlobalShortcuts`. Esa propiedad solo queda comprobada por el código del
+  proceso Tauri o por una prueba de integración que observe ambas llamadas en
+  la misma conexión.
+- Prueba manual: `npm run tauri -- dev` llegó a `VITE ready`, compiló y
+  ejecutó `target/debug/chamu`. `xwininfo` mostró la ventana `Chamu · Dictado
+  local`. El límite de 90 segundos detuvo el proceso. No se aceptó un diálogo,
+  no se seleccionó mantener pulsado y no se verificaron las transiciones ni
+  la transcripción en un campo de texto.

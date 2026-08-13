@@ -162,31 +162,42 @@ git commit -m "fix: register Chamu with Wayland portal"
 - Modify: `docs/superpowers/specs/2026-08-13-wayland-host-registration-design.md`
 - Modify: `docs/superpowers/plans/2026-08-13-wayland-host-registration.md`
 
-- [ ] **Step 1: Run frontend validation**
+- [x] **Step 1: Run frontend validation**
 
 Run: `npm test && npm run typecheck && npm run build`
 
-Expected: PASS.
+Result: PASS. Vitest informó 12 archivos y 96 pruebas sin fallos. `typecheck`
+y `build` terminaron con salida 0.
 
-- [ ] **Step 2: Run Rust validation**
+- [x] **Step 2: Run Rust validation**
 
 Run: `cargo test -q`
 
-Expected: PASS.
+Result: PASS. 54 pruebas sin fallos. La salida conserva warnings `dead_code`.
 
-- [ ] **Step 3: Run development preparation**
+- [x] **Step 3: Run development preparation**
 
 Run: `npm run prepare:desktop-entry && gdbus call --session --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop --method org.freedesktop.host.portal.Registry.Register com.chamu.desktop "{}"`
 
-Expected: the desktop entry is copied and the registry call completes without `App info not found`.
+Result: PASS. La entrada se copió a
+`~/.local/share/applications/com.chamu.desktop.desktop`. `Registry.Register`
+devolvió `()` sin `App info not found`.
+
+Limitación: la llamada `gdbus` usa una conexión D-Bus independiente. Prueba
+que el portal acepta el ID con la entrada instalada, pero no prueba que la
+conexión del proceso Tauri sea la misma que usa `GlobalShortcuts`.
 
 - [ ] **Step 4: Manual Wayland validation**
 
 Run: `npm run tauri -- dev`
 
-Accept the portal dialog. Select hold mode. Press the registered shortcut. Release it. Verify the visible state transitions and the test text field receives transcription.
+Resultado parcial: el frontend quedó listo, el binario se compiló y se ejecutó,
+y `xwininfo` mostró `Chamu · Dictado local`. El límite de 90 segundos terminó
+la ejecución. No hay evidencia de aceptar el diálogo, seleccionar mantener
+pulsado, pulsar y liberar el atajo, ni recibir transcripción. La casilla queda
+sin marcar.
 
-- [ ] **Step 5: Update documentation and commit**
+- [x] **Step 5: Update documentation and commit**
 
 ```bash
 git add docs/superpowers/specs/2026-08-13-wayland-host-registration-design.md docs/superpowers/plans/2026-08-13-wayland-host-registration.md
