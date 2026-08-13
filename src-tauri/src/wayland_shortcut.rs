@@ -1,9 +1,12 @@
-use ashpd::desktop::{
-    global_shortcuts::{
-        BindShortcutsOptions, ConfigureShortcutsOptions, GlobalShortcuts, ListShortcutsOptions,
-        NewShortcut,
+use ashpd::{
+    desktop::{
+        global_shortcuts::{
+            BindShortcutsOptions, ConfigureShortcutsOptions, GlobalShortcuts, ListShortcutsOptions,
+            NewShortcut,
+        },
+        CreateSessionOptions, Session,
     },
-    CreateSessionOptions, Session,
+    register_host_app_with_connection, AppID,
 };
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -17,6 +20,7 @@ use crate::RuntimeState;
 const EVENT_NAME: &str = "wayland-hold-shortcut";
 const SHORTCUT_ID: &str = "chamu_hold_dictation";
 const SHORTCUT_DESCRIPTION: &str = "Iniciar dictado mientras se mantiene pulsado";
+const CHAMU_APP_ID: &str = "com.chamu.desktop";
 const CLEANUP_PENDING_MESSAGE: &str =
     "La limpieza de una sesión Wayland anterior todavía está pendiente";
 
@@ -780,6 +784,26 @@ async fn create_session_with_cancellation(
     }
 }
 
+fn host_registration_error(error: &str) -> String {
+    format!(
+        "No se pudo registrar Chamu ante el portal Wayland ({CHAMU_APP_ID}): {error}"
+    )
+}
+
+async fn register_host_for_global_shortcuts() -> Result<GlobalShortcuts, String> {
+    let connection = ashpd::zbus::Connection::session()
+        .await
+        .map_err(|error| format!("No se pudo conectar al bus de sesión Wayland: {error}"))?;
+    let app_id = AppID::try_from(CHAMU_APP_ID)
+        .map_err(|error| format!("El identificador de Chamu es inválido: {error}"))?;
+    register_host_app_with_connection(connection.clone(), app_id)
+        .await
+        .map_err(|error| host_registration_error(&error.to_string()))?;
+    GlobalShortcuts::with_connection(connection)
+        .await
+        .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))
+}
+
 async fn run_portal_session_inner(
     shortcut: String,
     app: &AppHandle,
@@ -795,7 +819,7 @@ async fn run_portal_session_inner(
     ensure_cleanup_available(app)?;
 
     let portal = tokio::select! {
-        result = GlobalShortcuts::new() => result,
+        result = register_host_for_global_shortcuts() => result,
         _ = &mut cancel => return Ok(()),
     }
     .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))?;
@@ -959,9 +983,9 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 mod tests {
     use super::{
         configuration_action, event_matches_session, is_current_generation,
-        shortcut_change_trigger_description, stream_end_error, to_xdg_trigger, validate_shortcut,
-        CleanupPolicy, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
-        PortalConfigurationAction, CLEANUP_POLICY, SHORTCUT_ID,
+        host_registration_error, shortcut_change_trigger_description, stream_end_error,
+        to_xdg_trigger, validate_shortcut, CleanupPolicy, PortalConfigurationAction,
+        PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState, CLEANUP_POLICY, SHORTCUT_ID,
     };
 
     #[test]
@@ -1057,6 +1081,15 @@ mod tests {
         assert!(stream_end_error("activated").contains("activated"));
         assert!(stream_end_error("deactivated").contains("deactivated"));
         assert!(stream_end_error("closed").contains("closed"));
+    }
+
+    #[test]
+    fn formats_host_registration_error_with_application_id() {
+        let message = host_registration_error("portal rejected");
+        assert_eq!(
+            message,
+            "No se pudo registrar Chamu ante el portal Wayland (com.chamu.desktop): portal rejected"
+        );
     }
 
     #[test]
