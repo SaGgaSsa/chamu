@@ -1,6 +1,6 @@
 [package]
 name = "chamu"
-version = "0.1.3"
+version = "0.1.4"
 description = "Privacidad primero, dictado local para escritorio"
 authors = ["Chamu contributors"]
 edition = "2021"
