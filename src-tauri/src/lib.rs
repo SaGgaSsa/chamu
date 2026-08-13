@@ -20,6 +20,7 @@ mod core;
 mod dictation;
 mod audio_adapter;
 mod audio_capture;
+mod wayland_shortcut;
 
 use core::{
     append_diagnostic, app_storage_paths, command_available,
@@ -38,6 +39,7 @@ struct RuntimeState {
     downloads: DownloadController,
     diagnostics: Mutex<Vec<DiagnosticRecord>>,
     capture: Mutex<Option<CaptureSessionHandle>>,
+    wayland_shortcut_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -156,6 +158,7 @@ impl Default for RuntimeState {
             downloads: DownloadController::default(),
             diagnostics: Mutex::new(Vec::new()),
             capture: Mutex::new(None),
+            wayland_shortcut_task: Mutex::new(None),
         }
     }
 }
@@ -1176,6 +1179,8 @@ pub fn run() {
             test_paste,
             record_diagnostic,
             get_diagnostics,
+            wayland_shortcut::configure_wayland_hold_shortcut,
+            wayland_shortcut::clear_wayland_hold_shortcut,
             show_main_window
         ])
         .on_window_event(|window, event| {
