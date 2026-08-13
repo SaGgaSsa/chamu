@@ -821,8 +821,7 @@ async fn run_portal_session_inner(
     let portal = tokio::select! {
         result = register_host_for_global_shortcuts() => result,
         _ = &mut cancel => return Ok(()),
-    }
-    .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))?;
+    }?;
     let Some((portal, session)) =
         create_session_with_cancellation(portal, app, &mut cancel).await?
     else {
