@@ -61,6 +61,10 @@ describe("AppShell", () => {
     rerender(<AppShell recordingState={{ status: "recording" }} />);
     expect(screen.getByTestId("dictation-waveform")).toBeInTheDocument();
 
+    const control = screen.getByRole("button", { name: "Terminar dictado" });
+    expect(control.querySelector(".dictation-control__pulse")).toBeInTheDocument();
+    expect(control.querySelector("animate")).not.toBeInTheDocument();
+
     rerender(<AppShell recordingState={{ status: "copied" }} />);
     expect(screen.queryByTestId("dictation-waveform")).not.toBeInTheDocument();
   });

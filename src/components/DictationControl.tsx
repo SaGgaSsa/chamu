@@ -1,4 +1,3 @@
-import type { CSSProperties } from "react";
 import type { RecordingState } from "../domain/recording";
 
 export interface DictationControlProps {
@@ -20,21 +19,6 @@ export function DictationControl({ state, pending, disabled, onClick }: Dictatio
   const label = CONTROL_LABELS[state.status];
   const recording = state.status === "recording";
   const icon = recording ? <StopIcon /> : <MicrophoneIcon />;
-  const controlStyle: CSSProperties = {
-    alignItems: "center",
-    aspectRatio: "1",
-    border: recording ? "2px solid #00ff9c" : "2px solid #3a6a56",
-    borderRadius: "50%",
-    display: "inline-flex",
-    flexDirection: "column",
-    gap: "6px",
-    justifyContent: "center",
-    minWidth: "128px",
-    padding: "16px",
-    position: "relative",
-    width: "128px",
-    ...(recording ? { boxShadow: "0 0 15px rgba(0, 255, 156, 0.24)" } : {}),
-  };
 
   return (
     <button
@@ -44,14 +28,13 @@ export function DictationControl({ state, pending, disabled, onClick }: Dictatio
       data-status={state.status}
       disabled={disabled}
       onClick={onClick}
-      style={controlStyle}
       type="button"
     >
       <span aria-hidden="true" className="dictation-control__icon" data-icon={recording ? "stop" : "microphone"}>
         {icon}
       </span>
       {recording && <RecordingPulse />}
-      {recording && <span aria-hidden="true" className="dictation-control__rec" style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.08em", position: "absolute", right: "18px", top: "14px" }}>REC</span>}
+      {recording && <span aria-hidden="true" className="dictation-control__rec">REC</span>}
       <span aria-hidden="true" className="dictation-control__label">{label}</span>
       {recording && <Waveform />}
     </button>
@@ -82,7 +65,6 @@ function RecordingPulse() {
       className="dictation-control__pulse"
       fill="none"
       height="128"
-      style={{ inset: "0", pointerEvents: "none", position: "absolute" }}
       stroke="currentColor"
       strokeLinecap="square"
       strokeWidth="2"
@@ -90,10 +72,7 @@ function RecordingPulse() {
       width="128"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <circle cx="64" cy="64" opacity="0" r="54" stroke="#00ff9c" strokeLinecap="square" strokeWidth="2">
-        <animate attributeName="r" dur="1.4s" from="54" repeatCount="indefinite" to="62" />
-        <animate attributeName="opacity" dur="1.4s" from="0.8" repeatCount="indefinite" to="0" />
-      </circle>
+      <circle cx="64" cy="64" opacity="0" r="54" stroke="#00ff9c" strokeLinecap="square" strokeWidth="2" />
     </svg>
   );
 }
