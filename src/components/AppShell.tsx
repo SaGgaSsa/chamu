@@ -170,22 +170,43 @@ export function AppShell({
     if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
 
     let disposed = false;
-    void import("@tauri-apps/plugin-global-shortcut").then(async ({ register, unregister }) => {
+    const shortcut = currentSettings.shortcut;
+    let registered = false;
+    let unregisterStarted = false;
+    let unregisterShortcut: ((shortcut: string) => Promise<void>) | undefined;
+
+    async function unregisterIfRegistered() {
+      if (!registered || unregisterStarted || !unregisterShortcut) return;
+      unregisterStarted = true;
       try {
-        await register(currentSettings.shortcut, (event) => shortcutHandlerRef.current(event.state));
-        if (!disposed) setShortcutRegistrationError(null);
+        await unregisterShortcut(shortcut);
+      } catch {
+        // The shortcut is already outside this component's lifecycle.
+      }
+    }
+
+    const registration = import("@tauri-apps/plugin-global-shortcut").then(async ({ register, unregister }) => {
+      unregisterShortcut = unregister;
+      if (disposed) return;
+
+      try {
+        await register(shortcut, (event) => shortcutHandlerRef.current(event.state));
+        registered = true;
+        if (disposed) {
+          await unregisterIfRegistered();
+        } else {
+          setShortcutRegistrationError(null);
+        }
       } catch (error: unknown) {
         if (!disposed) setShortcutRegistrationError(getErrorMessage(error, "No se pudo registrar el atajo global"));
       }
-
-      return () => unregister(currentSettings.shortcut).catch(() => undefined);
+    }).catch((error: unknown) => {
+      if (!disposed) setShortcutRegistrationError(getErrorMessage(error, "No se pudo registrar el atajo global"));
     });
 
     return () => {
       disposed = true;
-      void import("@tauri-apps/plugin-global-shortcut")
-        .then(({ unregister }) => unregister(currentSettings.shortcut))
-        .catch(() => undefined);
+      void registration.then(() => unregisterIfRegistered()).catch(() => undefined);
     };
   }, [currentSettings.shortcut]);
 
