@@ -32,6 +32,54 @@ describe("AppShell", () => {
     expect(screen.getByText("Todo ocurre en este dispositivo")).toBeVisible();
   });
 
+  it("renders a status-aware microphone icon with the existing accessible name", () => {
+    render(<AppShell recordingState={{ status: "ready" }} />);
+
+    const control = screen.getByRole("button", { name: "Comenzar dictado" });
+    expect(control).toHaveAttribute("data-status", "ready");
+    expect(control.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("shows REC while recording", () => {
+    render(<AppShell recordingState={{ status: "recording" }} />);
+
+    const control = screen.getByRole("button", { name: "Terminar dictado" });
+    expect(control).toHaveTextContent("REC");
+  });
+
+  it("disables the dictation control while transcribing", () => {
+    render(<AppShell recordingState={{ status: "transcribing" }} />);
+
+    expect(screen.getByRole("button", { name: "Transcribiendo…" })).toBeDisabled();
+  });
+
+  it("renders the decorative waveform only while recording", () => {
+    const { rerender } = render(<AppShell recordingState={{ status: "ready" }} />);
+
+    expect(screen.queryByTestId("dictation-waveform")).not.toBeInTheDocument();
+
+    rerender(<AppShell recordingState={{ status: "recording" }} />);
+    expect(screen.getByTestId("dictation-waveform")).toBeInTheDocument();
+
+    const control = screen.getByRole("button", { name: "Terminar dictado" });
+    expect(control.querySelector(".dictation-control__pulse")).toBeInTheDocument();
+    expect(control.querySelector("animate")).not.toBeInTheDocument();
+
+    rerender(<AppShell recordingState={{ status: "copied" }} />);
+    expect(screen.queryByTestId("dictation-waveform")).not.toBeInTheDocument();
+  });
+
+  it("renders a visible pulse circle while recording", () => {
+    render(<AppShell recordingState={{ status: "recording" }} />);
+
+    const pulseCircle = screen
+      .getByRole("button", { name: "Terminar dictado" })
+      .querySelector(".dictation-control__pulse circle");
+
+    expect(pulseCircle).toBeInTheDocument();
+    expect(pulseCircle).not.toHaveAttribute("opacity", "0");
+  });
+
   it("renders the active recording status from state", () => {
     render(<AppShell recordingState={{ status: "recording" }} />);
 
