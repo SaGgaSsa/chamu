@@ -8,7 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MODEL_BASE_SHA256: &str =
@@ -487,10 +487,15 @@ pub struct ModelDownloadPlan {
     pub cancellation_supported: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct DownloadController {
+    current: Arc<Mutex<Option<Arc<DownloadSession>>>>,
+}
+
+#[derive(Debug)]
+struct DownloadSession {
+    model_id: String,
     cancelled: AtomicBool,
-    current_model: Mutex<Option<String>>,
     temporary_path: Mutex<Option<PathBuf>>,
 }
 
@@ -500,15 +505,18 @@ impl DownloadController {
             .into_iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| "Modelo no disponible".to_string())?;
-        self.cancelled.store(false, Ordering::Release);
-        *self
-            .current_model
+        let mut current = self
+            .current
             .lock()
-            .map_err(|_| "No se pudo iniciar la descarga".to_string())? = Some(model.id.clone());
-        *self
-            .temporary_path
-            .lock()
-            .map_err(|_| "No se pudo iniciar la descarga".to_string())? = None;
+            .map_err(|_| "No se pudo iniciar la descarga".to_string())?;
+        if current.is_some() {
+            return Err("Ya hay una descarga en curso".into());
+        }
+        *current = Some(Arc::new(DownloadSession {
+            model_id: model.id.clone(),
+            cancelled: AtomicBool::new(false),
+            temporary_path: Mutex::new(None),
+        }));
         Ok(ModelDownloadPlan {
             model,
             status: "planned".into(),
@@ -518,41 +526,61 @@ impl DownloadController {
     }
 
     pub fn cancel(&self) -> bool {
-        let had_download = self
-            .current_model
-            .lock()
-            .map(|mut current| current.take().is_some())
-            .unwrap_or(false);
-        if let Ok(mut temporary_path) = self.temporary_path.lock() {
+        let session = self.current.lock().ok().and_then(|current| current.clone());
+        let Some(session) = session else {
+            return false;
+        };
+        let was_cancelled = session.cancelled.swap(true, Ordering::AcqRel);
+        if let Ok(mut temporary_path) = session.temporary_path.lock() {
             if let Some(path) = temporary_path.take() {
                 let _ = fs::remove_file(path);
             }
         }
-        self.cancelled.store(true, Ordering::Release);
-        had_download
+        !was_cancelled
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.current
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .map(|session| session.cancelled.load(Ordering::Acquire))
+            .unwrap_or(false)
     }
 
     pub fn finish(&self, model_id: &str) {
-        if let Ok(mut current) = self.current_model.lock() {
-            if current.as_deref() == Some(model_id) {
-                current.take();
+        let session = self.current.lock().ok().and_then(|mut current| {
+            if current
+                .as_ref()
+                .map(|session| session.model_id.as_str())
+                == Some(model_id)
+            {
+                current.take()
+            } else {
+                None
             }
-        }
-        if let Ok(mut temporary_path) = self.temporary_path.lock() {
-            temporary_path.take();
+        });
+        if let Some(session) = session {
+            if let Ok(mut temporary_path) = session.temporary_path.lock() {
+                if let Some(path) = temporary_path.take() {
+                    let _ = fs::remove_file(path);
+                }
+            }
         }
     }
 
     pub fn set_temporary_path(&self, path: PathBuf) -> Result<(), String> {
-        if self.is_cancelled() {
+        let session = self
+            .current
+            .lock()
+            .map_err(|_| "No se pudo preparar la descarga".to_string())?
+            .clone()
+            .ok_or_else(|| "No hay una descarga en curso".to_string())?;
+        if session.cancelled.load(Ordering::Acquire) {
             let _ = fs::remove_file(path);
             return Err("Descarga cancelada".into());
         }
-        *self
+        *session
             .temporary_path
             .lock()
             .map_err(|_| "No se pudo preparar la descarga".to_string())? = Some(path);
@@ -1130,6 +1158,17 @@ mod tests {
         assert!(controller.cancel());
         assert!(controller.is_cancelled());
         assert!(!controller.cancel());
+    }
+
+    #[test]
+    fn model_download_controller_rejects_overlapping_downloads() {
+        let controller = DownloadController::default();
+        controller.begin("base").expect("begin first download");
+
+        let error = controller
+            .begin("base")
+            .expect_err("same model cannot be downloaded twice");
+        assert!(error.contains("curso"));
     }
 
     #[test]

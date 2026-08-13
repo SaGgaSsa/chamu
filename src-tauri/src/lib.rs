@@ -5,13 +5,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State,
+    AppHandle, Emitter, Manager, State,
 };
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -25,7 +26,7 @@ use core::{
     diagnose_platform as detect_platform, discover_models_in_dirs,
     finalize_model_download, load_diagnostics, load_settings_file, model_catalog, now_unix_millis,
     save_settings_file, validate_model_checksum, validate_settings, AppSettings, DiagnosticRecord,
-    DownloadController, HistoryEntry, HistoryStore, LocalModel, ModelDownloadPlan, ModelValidation,
+    DownloadController, HistoryEntry, HistoryStore, LocalModel, ModelValidation,
     PlatformDiagnosis, RecordingLifecycle, RecordingPhase,
 };
 use audio_capture::CaptureSessionHandle;
@@ -53,6 +54,50 @@ struct ModelStatus {
     size_mib: f64,
     progress: Option<u8>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ModelDownloadPhase {
+    Connecting,
+    Downloading,
+    Validating,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ModelDownloadProgress {
+    model_id: String,
+    phase: ModelDownloadPhase,
+    downloaded_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    percent: Option<u8>,
+    message: String,
+}
+
+impl ModelDownloadProgress {
+    fn new(
+        model_id: impl Into<String>,
+        phase: ModelDownloadPhase,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+        percent: Option<u8>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            model_id: model_id.into(),
+            phase,
+            downloaded_bytes,
+            total_bytes,
+            percent,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +213,34 @@ fn model_download_temp_path(destination: &Path) -> PathBuf {
         ".{filename}.part-{}-{sequence}",
         std::process::id()
     ))
+}
+
+const DOWNLOAD_CANCELLED_MESSAGE: &str = "Descarga cancelada";
+
+fn model_download_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
+    total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| ((downloaded_bytes.saturating_mul(100) / total).min(100)) as u8)
+}
+
+fn emit_model_download_progress(
+    app: &AppHandle,
+    model_id: &str,
+    phase: ModelDownloadPhase,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    percent: Option<u8>,
+    message: impl Into<String>,
+) {
+    let payload = ModelDownloadProgress::new(
+        model_id,
+        phase,
+        downloaded_bytes,
+        total_bytes,
+        percent,
+        message,
+    );
+    let _ = app.emit("model-download-progress", payload);
 }
 
 fn history_entry_for_bridge(entry: HistoryEntry) -> BridgeHistoryEntry {
@@ -602,82 +675,237 @@ fn inspect_model(model_id: Option<String>) -> Result<ModelStatus, String> {
 }
 
 #[tauri::command]
-fn download_model(
+fn start_model_download(
     model_id: String,
+    app: AppHandle,
     state: State<'_, RuntimeState>,
-) -> Result<ModelStatus, String> {
+) -> Result<(), String> {
     let model = model_catalog()
         .into_iter()
         .find(|model| model.id == model_id)
         .ok_or_else(|| "Modelo no disponible".to_string())?;
     let current_status = model_status(&model_id)?;
     if current_status.installed && current_status.checksum_valid {
-        return Ok(ModelStatus {
-            progress: Some(100),
-            error: None,
-            ..current_status
-        });
+        emit_model_download_progress(
+            &app,
+            &model_id,
+            ModelDownloadPhase::Completed,
+            model.size_bytes,
+            Some(model.size_bytes),
+            Some(100),
+            "El modelo ya está instalado",
+        );
+        return Ok(());
     }
 
-    // Reaching this command means the user has explicitly confirmed the download
-    // in onboarding.  The HTTP client is used only for the signed model catalog;
-    // no audio, text, diagnostics, or other application data is sent.
     let destination = model_install_path(&model)?;
     let temporary = model_download_temp_path(&destination);
-    state.downloads.begin(&model_id)?;
-    state.downloads.set_temporary_path(temporary.clone())?;
-
-    let result = (|| {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(|error| format!("No se pudo preparar la descarga: {error}"))?;
-        let mut response = client
-            .get(&model.download_url)
-            .send()
-            .map_err(|error| format!("No se pudo descargar el modelo: {error}"))?
-            .error_for_status()
-            .map_err(|error| format!("El servidor rechazó la descarga: {error}"))?;
-
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|error| error.to_string())?;
-        let mut buffer = [0_u8; 128 * 1024];
-        loop {
-            if state.downloads.is_cancelled() {
-                return Err("Descarga cancelada".into());
-            }
-            let read = response
-                .read(&mut buffer)
-                .map_err(|error| format!("No se pudo leer el modelo descargado: {error}"))?;
-            if read == 0 {
-                break;
-            }
-            file.write_all(&buffer[..read])
-                .map_err(|error| format!("No se pudo guardar el modelo descargado: {error}"))?;
-        }
-        if state.downloads.is_cancelled() {
-            return Err("Descarga cancelada".into());
-        }
-        file.flush().map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        finalize_model_download(&temporary, &destination, &model.sha256)
-            .map(|_| ())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    let plan = state.downloads.begin(&model_id)?;
+    if let Err(error) = state.downloads.set_temporary_path(temporary.clone()) {
+        state.downloads.finish(&model_id);
+        let phase = if error == DOWNLOAD_CANCELLED_MESSAGE {
+            ModelDownloadPhase::Cancelled
+        } else {
+            ModelDownloadPhase::Failed
+        };
+        emit_model_download_progress(
+            &app,
+            &model_id,
+            phase,
+            0,
+            Some(model.size_bytes),
+            (phase == ModelDownloadPhase::Cancelled).then_some(0),
+            error.clone(),
+        );
+        return Err(error);
     }
-    state.downloads.finish(&model_id);
-    result?;
 
-    let mut status = model_status(&model_id)?;
-    status.progress = Some(100);
-    status.error = None;
-    Ok(status)
+    emit_model_download_progress(
+        &app,
+        &model_id,
+        ModelDownloadPhase::Connecting,
+        0,
+        None,
+        None,
+        "Conectando con el servidor",
+    );
+
+    let controller = state.downloads.clone();
+    let worker_app = app.clone();
+    let worker_model = plan.model;
+    let worker_model_id = model_id.clone();
+    let worker_destination = destination;
+    let worker_temporary = temporary;
+    thread::Builder::new()
+        .name(format!("chamu-model-download-{worker_model_id}"))
+        .spawn(move || {
+            run_model_download(
+                worker_app,
+                controller,
+                worker_model,
+                worker_model_id,
+                worker_destination,
+                worker_temporary,
+            );
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            let message = format!("No se pudo iniciar la descarga: {error}");
+            let _ = fs::remove_file(&temporary);
+            state.downloads.finish(&model_id);
+            emit_model_download_progress(
+                &app,
+                &model_id,
+                ModelDownloadPhase::Failed,
+                0,
+                Some(model.size_bytes),
+                None,
+                message.clone(),
+            );
+            message
+        })
+}
+
+fn run_model_download(
+    app: AppHandle,
+    controller: DownloadController,
+    model: core::ModelMetadata,
+    model_id: String,
+    destination: PathBuf,
+    temporary: PathBuf,
+) {
+    let result = perform_model_download(
+        &app,
+        &controller,
+        &model,
+        &model_id,
+        &destination,
+        &temporary,
+    );
+
+    match result {
+        Ok((downloaded_bytes, total_bytes)) => emit_model_download_progress(
+            &app,
+            &model_id,
+            ModelDownloadPhase::Completed,
+            downloaded_bytes,
+            total_bytes.or(Some(model.size_bytes)),
+            Some(100),
+            "Modelo descargado y validado",
+        ),
+        Err(error) => {
+            let cancelled = controller.is_cancelled() || error == DOWNLOAD_CANCELLED_MESSAGE;
+            let _ = fs::remove_file(&temporary);
+            emit_model_download_progress(
+                &app,
+                &model_id,
+                if cancelled {
+                    ModelDownloadPhase::Cancelled
+                } else {
+                    ModelDownloadPhase::Failed
+                },
+                0,
+                None,
+                None,
+                if cancelled {
+                    DOWNLOAD_CANCELLED_MESSAGE.to_string()
+                } else {
+                    format!("Error al descargar el modelo: {error}")
+                },
+            );
+        }
+    }
+    controller.finish(&model_id);
+}
+
+fn perform_model_download(
+    app: &AppHandle,
+    controller: &DownloadController,
+    model: &core::ModelMetadata,
+    model_id: &str,
+    destination: &Path,
+    temporary: &Path,
+) -> Result<(u64, Option<u64>), String> {
+    if controller.is_cancelled() {
+        return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("No se pudo preparar la descarga: {error}"))?;
+    let mut response = client
+        .get(&model.download_url)
+        .send()
+        .map_err(|error| format!("No se pudo descargar el modelo: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("El servidor rechazó la descarga: {error}"))?;
+    let total_bytes = response.content_length();
+
+    if controller.is_cancelled() {
+        return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
+    }
+
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(temporary)
+        .map_err(|error| error.to_string())?;
+    let mut downloaded_bytes = 0_u64;
+    emit_model_download_progress(
+        app,
+        model_id,
+        ModelDownloadPhase::Downloading,
+        downloaded_bytes,
+        total_bytes,
+        model_download_percent(downloaded_bytes, total_bytes),
+        "Descargando modelo",
+    );
+
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        if controller.is_cancelled() {
+            return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
+        }
+        let read = response
+            .read(&mut buffer)
+            .map_err(|error| format!("No se pudo leer el modelo descargado: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|error| format!("No se pudo guardar el modelo descargado: {error}"))?;
+        downloaded_bytes = downloaded_bytes.saturating_add(read as u64);
+        emit_model_download_progress(
+            app,
+            model_id,
+            ModelDownloadPhase::Downloading,
+            downloaded_bytes,
+            total_bytes,
+            model_download_percent(downloaded_bytes, total_bytes),
+            "Descargando modelo",
+        );
+    }
+    if controller.is_cancelled() {
+        return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
+    }
+    file.flush().map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    emit_model_download_progress(
+        app,
+        model_id,
+        ModelDownloadPhase::Validating,
+        downloaded_bytes,
+        total_bytes,
+        model_download_percent(downloaded_bytes, total_bytes),
+        "Validando modelo descargado",
+    );
+    if controller.is_cancelled() {
+        return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
+    }
+    finalize_model_download(temporary, destination, &model.sha256).map(|_| ())?;
+    Ok((downloaded_bytes, total_bytes))
 }
 
 #[tauri::command]
@@ -706,14 +934,6 @@ fn validate_model(
             .ok_or_else(|| "Se requiere el checksum SHA-256 del modelo".to_string())?,
     };
     validate_model_checksum(&path, &expected)
-}
-
-#[tauri::command]
-fn request_model_download(
-    model_id: String,
-    state: State<'_, RuntimeState>,
-) -> Result<ModelDownloadPlan, String> {
-    state.downloads.begin(&model_id)
 }
 
 #[tauri::command]
@@ -848,19 +1068,18 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Mostrar Chamu", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Configuración", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
+    let open = MenuItem::with_id(app, "open", "Abrir Chamu", true, None::<&str>)?;
+    let close = MenuItem::with_id(app, "close", "Cerrar Chamu", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &close])?;
 
     TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Chamu · Dictado local")
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" | "settings" => {
+            "open" => {
                 let _ = show_main_window(app.clone());
             }
-            "quit" => app.exit(0),
+            "close" => app.exit(0),
             _ => {}
         })
         .build(app)?;
@@ -892,10 +1111,9 @@ pub fn run() {
             delete_history,
             get_model_catalog,
             inspect_model,
-            download_model,
+            start_model_download,
             discover_models,
             validate_model,
-            request_model_download,
             cancel_model_download,
             diagnose_platform,
             test_microphone,
@@ -906,10 +1124,56 @@ pub fn run() {
             get_diagnostics,
             show_main_window
         ])
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             setup_tray(app)?;
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running Chamu");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_download_progress_serializes_wire_contract() {
+        let progress = ModelDownloadProgress::new(
+            "base",
+            ModelDownloadPhase::Downloading,
+            512,
+            Some(1_024),
+            Some(50),
+            "Descargando modelo",
+        );
+
+        let json = serde_json::to_value(progress).expect("serialize progress");
+        assert_eq!(json["modelId"], "base");
+        assert_eq!(json["phase"], "downloading");
+        assert_eq!(json["downloadedBytes"], 512);
+        assert_eq!(json["totalBytes"], 1_024);
+        assert_eq!(json["percent"], 50);
+        assert_eq!(json["message"], "Descargando modelo");
+
+        let unknown_total = ModelDownloadProgress::new(
+            "base",
+            ModelDownloadPhase::Connecting,
+            0,
+            None,
+            None,
+            "Conectando",
+        );
+        let json = serde_json::to_value(unknown_total).expect("serialize progress");
+        assert!(json.get("totalBytes").is_none());
+        assert!(json.get("percent").is_none());
+    }
 }
