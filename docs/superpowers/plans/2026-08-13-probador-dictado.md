@@ -33,6 +33,9 @@
 - Modificar `src/components/ShortcutField.tsx`: normalizar el alias por plataforma antes de registrar o validar.
 - Modificar `src/styles.css` y `src-tauri/tauri.conf.json`: ajustar altura, área flexible y diseño compacto.
 - Modificar `README.md`: documentar inicio y prueba local.
+- Modificar `src/components/ShortcutField.tsx`: conservar modificadores durante la captura y mostrar una vista previa.
+- Modificar `src/components/AppShell.tsx`: pausar el registro global durante la captura y mostrar la preparación del micrófono.
+- Modificar `src-tauri/src/audio_capture.rs`, `src-tauri/src/lib.rs` y `src/native/commands.ts`: devolver el nombre del micrófono predeterminado.
 
 ### Task 1: Resultado nativo completo de dictado
 
@@ -224,10 +227,70 @@ Describir: hacer foco en «Texto de prueba», iniciar y detener con botón, repe
 
 Run: `npm test -- src/styles.test.ts`
 
-### Task 5: Validación final
+### Task 5: Captura visible de atajo y micrófono predeterminado
 
 **Files:**
-- Verify: archivos modificados en Tasks 1–4
+- Modify: `src/components/ShortcutField.tsx`
+- Modify: `src/components/ShortcutField.test.tsx`
+- Modify: `src/components/DictationTester.tsx`
+- Modify: `src/components/DictationTester.test.tsx`
+- Modify: `src/components/AppShell.tsx`
+- Modify: `src/components/AppShell.test.tsx`
+- Modify: `src/native/commands.ts`
+- Modify: `src-tauri/src/audio_capture.rs`
+- Modify: `src-tauri/src/lib.rs`
+
+**Interfaces:**
+- Produces: `ShortcutFieldProps.onCapturingChange?: (capturing: boolean) => void`.
+- Produces: `getMicrophoneInfo(): Promise<MicrophoneInfo>` con `{ name: string }`.
+- Consumes: `cpal::Host::default_input_device()` y `DeviceTrait::name()`.
+
+- [ ] **Step 1: Escribir pruebas fallidas de atajo y micrófono.**
+
+```tsx
+fireEvent.click(screen.getByRole('button', { name: /capturar atajo/i }));
+fireEvent.keyDown(screen.getByRole('button', { name: /pulsa el atajo/i }), {
+  code: 'ControlLeft', key: 'Control', ctrlKey: true,
+});
+expect(screen.getByText(/ctrl.*…/i)).toBeVisible();
+expect(onError).not.toHaveBeenCalled();
+
+fireEvent.keyDown(screen.getByRole('button', { name: /pulsa el atajo/i }), { key: 'Escape' });
+expect(onChange).not.toHaveBeenCalled();
+
+expect(screen.getByText('Micrófono activo: Micrófono USB')).toBeVisible();
+```
+
+La mutación que estas pruebas deben detectar es volver a terminar la captura al pulsar sólo `Ctrl`, aceptar un atajo después de `Esc`, u ocultar el nombre del micrófono.
+
+- [ ] **Step 2: Ejecutar las pruebas y confirmar que fallan.**
+
+Run: `npm test -- src/components/ShortcutField.test.tsx src/components/DictationTester.test.tsx src/components/AppShell.test.tsx`
+
+- [ ] **Step 3: Implementar la captura no final con vista previa.**
+
+En `keydown`, si no hay tecla principal y hay modificadores, conservar `capturing`, limpiar el error y mostrar la combinación con `…`. Si la tecla es `Escape`, cancelar, restaurar el valor visible existente y notificar `onCapturingChange(false)`. Al aceptar o cancelar, notificar el mismo cambio. Sólo aplicar `normalizeShortcutFromKeyboardEvent` como error final cuando haya una tecla principal.
+
+- [ ] **Step 4: Pausar el registro global durante la captura.**
+
+En `AppShell`, conservar `shortcutCaptureActive`. No registrar el atajo cuando es verdadero. La limpieza existente debe desregistrarlo al cambiar a verdadero. Volver a registrar el atajo guardado cuando cambie a falso. No cambiar el valor guardado mientras se captura.
+
+- [ ] **Step 5: Devolver y mostrar el micrófono predeterminado.**
+
+Crear una función pura en `audio_capture.rs` que reciba un nombre opcional y devuelva el nombre o `Micrófono predeterminado del sistema`. El comando Tauri debe leer el dispositivo predeterminado y su nombre. Exponerlo en el puente y cargarlo una vez en `AppShell`. Pasarlo a `DictationTester` y mostrar `Micrófono activo: <nombre>`.
+
+- [ ] **Step 6: Mostrar la preparación del micrófono.**
+
+Añadir un estado de interfaz `starting` o una bandera equivalente. Cambiarlo antes de esperar `startDictation`. Mostrar `Preparando micrófono…` y desactivar la acción duplicada. Volver a `recording` al resultado nativo. Volver a `error` si falla.
+
+- [ ] **Step 7: Ejecutar pruebas frontend y Rust.**
+
+Run: `npm test -- src/components/ShortcutField.test.tsx src/components/DictationTester.test.tsx src/components/AppShell.test.tsx && cargo test -q --manifest-path src-tauri/Cargo.toml`
+
+### Task 6: Validación final
+
+**Files:**
+- Verify: archivos modificados en Tasks 1–5
 
 - [ ] **Step 1: Revisar el alcance de archivos.**
 

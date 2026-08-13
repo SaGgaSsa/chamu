@@ -35,6 +35,21 @@ Hacer que Chamu muestre un probador de dictado en la pantalla principal. El usua
 - Antes de registrar o validar el atajo, convertirlo al modificador explícito de la plataforma. Usar `Ctrl` en Linux y Windows. Usar `Command` en macOS.
 - Registrar el mismo valor normalizado para la validación y para el atajo activo.
 - Mostrar el error del registro sólo si el registro normalizado falla.
+- Al capturar un atajo, conservar la captura después de recibir sólo modificadores.
+- Mostrar una vista previa de las teclas activas. Ejemplo: `Ctrl + Shift + …`.
+- Aceptar el atajo sólo al recibir una tecla principal válida.
+- Cancelar la captura con `Esc` sin cambiar el atajo guardado.
+- Desregistrar temporalmente el atajo global durante la captura. Registrarlo otra vez al aceptar o cancelar.
+- Mantener el mensaje de error sólo para una combinación completa no válida.
+
+### Micrófono y comienzo del dictado
+
+- Usar el dispositivo de entrada predeterminado del sistema, como ahora.
+- Mostrar su nombre en el probador. Texto: `Micrófono activo: <nombre>`.
+- Si no se puede leer el nombre, mostrar `Micrófono predeterminado del sistema`.
+- No añadir selección ni persistencia de dispositivo en este cambio.
+- Añadir el estado `Preparando micrófono…` desde el clic hasta que la captura nativa confirme el inicio.
+- El estado de preparación no depende del modelo. La transcripción sigue después de detener el dictado.
 
 ### Ventana y diseño
 
@@ -69,6 +84,11 @@ Hacer que Chamu muestre un probador de dictado en la pantalla principal. El usua
 - Prueba de interfaz para reiniciar onboarding sin cambiar la configuración guardada.
 - Prueba unitaria para normalizar `CommandOrControl` por plataforma.
 - Prueba de interfaz para registrar el atajo normalizado.
+- Prueba de interfaz para mantener la captura tras pulsar sólo modificadores y mostrar su vista previa.
+- Prueba de interfaz para cancelar la captura con `Esc` sin cambiar el valor.
+- Prueba de interfaz para pausar el atajo global durante la captura.
+- Prueba Rust para devolver el nombre del micrófono predeterminado y el texto de reserva cuando no esté disponible.
+- Prueba de interfaz para mostrar el nombre del micrófono y el estado de preparación.
 - Pruebas de estilos para el diseño compacto de la ventana.
 - Validación completa: `npm test`, `npm run typecheck`, `npm run build` y `cargo test -q` desde `src-tauri/`.
 
@@ -78,3 +98,4 @@ Hacer que Chamu muestre un probador de dictado en la pantalla principal. El usua
 - No se pega texto de forma automática en otra aplicación.
 - No se borra el historial al reiniciar onboarding.
 - No se cambia la descarga ni la validación del modelo.
+- No se añade selección de micrófono en esta iteración.
