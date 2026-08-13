@@ -5,6 +5,8 @@ import {
   nativeBridge,
   type DictationResult,
   type ChamuBridge,
+  type PlatformDiagnosis,
+  type WaylandHoldShortcutEvent,
 } from "../native/commands";
 import { PrivacyBadge } from "./PrivacyBadge";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
@@ -43,18 +45,71 @@ export function AppShell({
     id: string | number;
   }>();
   const [shortcutRegistrationError, setShortcutRegistrationError] = useState<string | null>(null);
+  const [platformDiagnosis, setPlatformDiagnosis] = useState<PlatformDiagnosis>();
+  const [platformDiagnosisReady, setPlatformDiagnosisReady] = useState(false);
+  const [waylandShortcutStatus, setWaylandShortcutStatus] = useState<WaylandHoldShortcutEvent>();
   const shortcutHandlerRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
+  const waylandShortcutHandlerRef = useRef<(event: WaylandHoldShortcutEvent) => void>(() => undefined);
   const testerRef = useRef<DictationTesterHandle>(null);
   const dictationResultCounterRef = useRef(0);
+  const currentRecordingStateRef = useRef(currentRecordingState);
+  const dictationActionPendingRef = useRef(dictationActionPending);
+  const dictationStartingRef = useRef(dictationStarting);
+  const waylandReleasePendingRef = useRef(false);
+
+  function updateRecordingState(nextState: RecordingState) {
+    currentRecordingStateRef.current = nextState;
+    setCurrentRecordingState(nextState);
+  }
+
+  function updateDictationActionPending(pending: boolean) {
+    dictationActionPendingRef.current = pending;
+    setDictationActionPending(pending);
+  }
+
+  function updateDictationStarting(starting: boolean) {
+    dictationStartingRef.current = starting;
+    setDictationStarting(starting);
+  }
 
   useEffect(() => {
-    if (recordingState) setCurrentRecordingState(recordingState);
+    if (recordingState) updateRecordingState(recordingState);
   }, [recordingState]);
 
   useEffect(() => {
     setCurrentSettings(settings);
     setDraftSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlatformDiagnosis(undefined);
+    setPlatformDiagnosisReady(false);
+    const diagnose = activeBridge.diagnosePlatform;
+    const nativeRuntimeUnavailable =
+      activeBridge === nativeBridge
+      && (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window));
+    if (!diagnose || nativeRuntimeUnavailable) {
+      setPlatformDiagnosisReady(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void diagnose().then((diagnosis) => {
+      if (cancelled) return;
+      setPlatformDiagnosis(diagnosis);
+      setPlatformDiagnosisReady(true);
+    }).catch(() => {
+      if (cancelled) return;
+      setPlatformDiagnosis(undefined);
+      setPlatformDiagnosisReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBridge]);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,9 +162,13 @@ export function AppShell({
   }
 
   async function handleDictation() {
-    if (dictationActionPending || dictationStarting || currentRecordingState.status === "transcribing") return;
+    if (
+      dictationActionPendingRef.current
+      || dictationStartingRef.current
+      || currentRecordingStateRef.current.status === "transcribing"
+    ) return;
 
-    if (currentRecordingState.status === "recording") {
+    if (currentRecordingStateRef.current.status === "recording") {
       await stopDictation();
       return;
     }
@@ -120,19 +179,115 @@ export function AppShell({
 
   shortcutHandlerRef.current = (state) => {
     if (state === "Pressed") {
-      if (currentSettings.mode === "toggle" || currentRecordingState.status !== "recording") {
+      if (currentSettings.mode === "toggle" || currentRecordingStateRef.current.status !== "recording") {
         void handleDictation();
       }
       return;
     }
-    if (currentSettings.mode === "hold" && currentRecordingState.status === "recording") {
+    if (currentSettings.mode === "hold" && currentRecordingStateRef.current.status === "recording") {
       void stopDictation();
     }
   };
 
+  function handleWaylandShortcutEvent(event: WaylandHoldShortcutEvent) {
+    setWaylandShortcutStatus(event);
+    if (event.status === "pressed") {
+      waylandReleasePendingRef.current = false;
+      void handleDictation();
+      return;
+    }
+    if (event.status !== "released") return;
+
+    if (dictationStartingRef.current) {
+      waylandReleasePendingRef.current = true;
+      return;
+    }
+    if (
+      currentRecordingStateRef.current.status === "recording"
+      && !dictationActionPendingRef.current
+    ) {
+      void stopDictation();
+    }
+  }
+
+  waylandShortcutHandlerRef.current = handleWaylandShortcutEvent;
+
+  const useWaylandHoldPortal =
+    platformDiagnosisReady
+    && platformDiagnosis?.session === "wayland"
+    && currentSettings.mode === "hold";
+
+  useEffect(() => {
+    const onWaylandHoldShortcut = activeBridge.onWaylandHoldShortcut;
+    const configureWaylandHoldShortcut = activeBridge.configureWaylandHoldShortcut;
+    const clearWaylandHoldShortcut = activeBridge.clearWaylandHoldShortcut;
+    if (!platformDiagnosisReady || !useWaylandHoldPortal || shortcutCaptureActive) {
+      if (!useWaylandHoldPortal) setWaylandShortcutStatus(undefined);
+      return;
+    }
+    if (!onWaylandHoldShortcut || !configureWaylandHoldShortcut || !clearWaylandHoldShortcut) {
+      setWaylandShortcutStatus({
+        status: "error",
+        message: "El portal de atajos Wayland no está disponible",
+      });
+      return;
+    }
+    const subscribeToWaylandShortcut = onWaylandHoldShortcut;
+    const configurePortalShortcut = configureWaylandHoldShortcut;
+    const clearPortalShortcut = clearWaylandHoldShortcut;
+
+    let disposed = false;
+    let listenerRemoved = false;
+    let unlisten: (() => void) | undefined;
+    const shortcut = currentSettings.shortcut;
+
+    function removeListener() {
+      if (listenerRemoved || !unlisten) return;
+      listenerRemoved = true;
+      unlisten();
+    }
+
+    async function configurePortal() {
+      try {
+        unlisten = await subscribeToWaylandShortcut((event) => waylandShortcutHandlerRef.current(event));
+        if (disposed) {
+          removeListener();
+          return;
+        }
+        await configurePortalShortcut(shortcut);
+      } catch (error: unknown) {
+        if (!disposed) {
+          setWaylandShortcutStatus({
+            status: "error",
+            message: getErrorMessage(error, "No se pudo registrar el atajo Wayland"),
+          });
+        }
+      }
+    }
+
+    setWaylandShortcutStatus(undefined);
+    const configuration = configurePortal();
+    return () => {
+      disposed = true;
+      waylandReleasePendingRef.current = false;
+      removeListener();
+      void configuration.then(removeListener).catch(() => undefined);
+      void clearPortalShortcut().catch(() => undefined);
+    };
+  }, [
+    activeBridge,
+    currentSettings.mode,
+    currentSettings.shortcut,
+    platformDiagnosisReady,
+    shortcutCaptureActive,
+    useWaylandHoldPortal,
+  ]);
+
   useEffect(() => {
     if (
-      shortcutCaptureActive
+      !platformDiagnosisReady
+      || useWaylandHoldPortal
+      || shortcutCaptureActive
       || typeof window === "undefined"
       || !("__TAURI_INTERNALS__" in window)
     ) return;
@@ -176,28 +331,33 @@ export function AppShell({
       disposed = true;
       void registration.then(() => unregisterIfRegistered()).catch(() => undefined);
     };
-  }, [currentSettings.shortcut, shortcutCaptureActive]);
+  }, [currentSettings.shortcut, platformDiagnosisReady, shortcutCaptureActive, useWaylandHoldPortal]);
 
   async function startDictation() {
-    setDictationStarting(true);
-    setDictationActionPending(true);
+    updateDictationStarting(true);
+    updateDictationActionPending(true);
+    let started = false;
     try {
       if (!activeBridge.startDictation) {
         throw new Error("El dictado nativo no está disponible");
       }
       const result = await activeBridge.startDictation();
       applyDictationResult(result, "recording");
+      started = !result || result.status === "recording";
     } catch (error: unknown) {
-      setCurrentRecordingState({ status: "error", message: getErrorMessage(error, "No se pudo iniciar el dictado") });
+      updateRecordingState({ status: "error", message: getErrorMessage(error, "No se pudo iniciar el dictado") });
     } finally {
-      setDictationStarting(false);
-      setDictationActionPending(false);
+      const releasePending = waylandReleasePendingRef.current;
+      waylandReleasePendingRef.current = false;
+      updateDictationStarting(false);
+      updateDictationActionPending(false);
+      if (releasePending && started) void stopDictation();
     }
   }
 
   async function stopDictation() {
-    setCurrentRecordingState({ status: "transcribing" });
-    setDictationActionPending(true);
+    updateRecordingState({ status: "transcribing" });
+    updateDictationActionPending(true);
     try {
       if (!activeBridge.stopDictation) {
         throw new Error("El dictado nativo no está disponible");
@@ -205,35 +365,35 @@ export function AppShell({
       const result = await activeBridge.stopDictation();
       applyDictationResult(result, "transcribing");
     } catch (error: unknown) {
-      setCurrentRecordingState({ status: "error", message: getErrorMessage(error, "No se pudo transcribir el dictado") });
+      updateRecordingState({ status: "error", message: getErrorMessage(error, "No se pudo transcribir el dictado") });
     } finally {
-      setDictationActionPending(false);
+      updateDictationActionPending(false);
     }
   }
 
   function applyDictationResult(result: DictationResult | void, fallbackStatus: "recording" | "transcribing") {
     if (!result) {
-      setCurrentRecordingState({ status: fallbackStatus });
+      updateRecordingState({ status: fallbackStatus });
       return;
     }
 
     switch (result.status) {
       case "ready":
-        setCurrentRecordingState({ status: "ready" });
+        updateRecordingState({ status: "ready" });
         return;
       case "recording":
-        setCurrentRecordingState({ status: "recording" });
+        updateRecordingState({ status: "recording" });
         return;
       case "transcribing":
-        setCurrentRecordingState({ status: "transcribing" });
+        updateRecordingState({ status: "transcribing" });
         return;
       case "copied":
-        setCurrentRecordingState({ status: "copied" });
+        updateRecordingState({ status: "copied" });
         const resultId = result.historyEntry?.id ?? ++dictationResultCounterRef.current;
         setDictationResult({ text: result.text, id: resultId });
         return;
       case "error":
-        setCurrentRecordingState({
+        updateRecordingState({
           status: "error",
           message: result.message ?? "No se pudo completar el dictado",
         });
@@ -281,6 +441,7 @@ export function AppShell({
           resultText={dictationResult?.text}
           resultId={dictationResult?.id}
           shortcutRegistrationError={shortcutRegistrationError}
+          waylandShortcutStatus={waylandShortcutStatus}
           onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}
           onCapturingChange={setShortcutCaptureActive}
         />

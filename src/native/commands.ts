@@ -50,6 +50,19 @@ export interface MicrophoneInfo {
   name: string;
 }
 
+export type PlatformSession = "windows" | "x11" | "wayland" | "unknown";
+
+export interface PlatformDiagnosis {
+  session: PlatformSession;
+}
+
+export type WaylandHoldShortcutStatus = "registered" | "pressed" | "released" | "error";
+
+export interface WaylandHoldShortcutEvent {
+  status: WaylandHoldShortcutStatus;
+  message?: string;
+}
+
 export interface ShortcutCheck {
   ok: boolean;
   captured: string;
@@ -110,6 +123,13 @@ export interface ChamuBridge {
   /** Optional to keep browser/test bridges source-compatible; nativeBridge provides both. */
   startDictation?: () => Promise<DictationResult | void>;
   stopDictation?: () => Promise<DictationResult | void>;
+  /** Optional to keep browser/test bridges source-compatible; nativeBridge provides all portal methods. */
+  diagnosePlatform?: () => Promise<PlatformDiagnosis>;
+  configureWaylandHoldShortcut?: (shortcut: string) => Promise<void>;
+  clearWaylandHoldShortcut?: () => Promise<void>;
+  onWaylandHoldShortcut?: (
+    listener: (event: WaylandHoldShortcutEvent) => void,
+  ) => Promise<() => void>;
 }
 
 /** Native bridge kept intentionally small; audio never crosses this boundary. */
@@ -199,6 +219,26 @@ export function testShortcut(shortcut: string): Promise<ShortcutCheck> {
   return invoke<ShortcutCheck>("test_shortcut", { shortcut });
 }
 
+export function diagnosePlatform(): Promise<PlatformDiagnosis> {
+  return invoke<PlatformDiagnosis>("diagnose_platform");
+}
+
+export function configureWaylandHoldShortcut(shortcut: string): Promise<void> {
+  return invoke("configure_wayland_hold_shortcut", { shortcut });
+}
+
+export function clearWaylandHoldShortcut(): Promise<void> {
+  return invoke("clear_wayland_hold_shortcut");
+}
+
+export async function onWaylandHoldShortcut(
+  listener: (event: WaylandHoldShortcutEvent) => void,
+): Promise<() => void> {
+  return listen<WaylandHoldShortcutEvent>("wayland-hold-shortcut", (event) => {
+    listener(event.payload);
+  });
+}
+
 export function testClipboard(): Promise<ClipboardCheck> {
   return invoke<ClipboardCheck>("test_clipboard");
 }
@@ -229,6 +269,10 @@ export const nativeBridge: ChamuBridge = {
   testMicrophone,
   getMicrophoneInfo,
   testShortcut,
+  diagnosePlatform,
+  configureWaylandHoldShortcut,
+  clearWaylandHoldShortcut,
+  onWaylandHoldShortcut,
   testClipboard,
   testPaste,
   loadHistory,

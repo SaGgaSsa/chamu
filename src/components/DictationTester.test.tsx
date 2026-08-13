@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../domain/settings";
 import type { AppSettings } from "../domain/settings";
 import type { RecordingState } from "../domain/recording";
+import type { WaylandHoldShortcutEvent } from "../native/commands";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
 
 function renderTester(overrides: Partial<{
@@ -15,6 +16,7 @@ function renderTester(overrides: Partial<{
   resultText?: string;
   resultId?: string | number;
   shortcutRegistrationError?: string | null;
+  waylandShortcutStatus?: WaylandHoldShortcutEvent;
 } > = {}) {
   const onSettingsChange = vi.fn();
   const onDictationClick = vi.fn();
@@ -30,6 +32,7 @@ function renderTester(overrides: Partial<{
     resultText: undefined,
     resultId: undefined,
     shortcutRegistrationError: null,
+    waylandShortcutStatus: undefined,
     onShortcutRegistrationError,
     ...overrides,
   };
@@ -162,5 +165,27 @@ describe("DictationTester", () => {
     renderTester({ microphoneName: "Micrófono USB" });
 
     expect(screen.getByText("Micrófono activo: Micrófono USB")).toBeVisible();
+  });
+
+  it("shows the latest Wayland portal transition and its error message", () => {
+    const { rerender, props } = renderTester();
+
+    expect(screen.queryByText(/Atajo Wayland:/i)).toBeNull();
+
+    rerender(
+      <DictationTester
+        {...props}
+        waylandShortcutStatus={{ status: "registered" }}
+      />,
+    );
+    expect(screen.getByText("Atajo Wayland: registrado")).toBeVisible();
+
+    rerender(
+      <DictationTester
+        {...props}
+        waylandShortcutStatus={{ status: "error", message: "Permiso rechazado" }}
+      />,
+    );
+    expect(screen.getByText(/Permiso rechazado/)).toBeVisible();
   });
 });

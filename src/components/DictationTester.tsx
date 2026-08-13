@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { AppSettings } from "../domain/settings";
 import type { RecordingState } from "../domain/recording";
-import type { DictationResult } from "../native/commands";
+import type { DictationResult, WaylandHoldShortcutEvent } from "../native/commands";
 import { DictationControl } from "./DictationControl";
 import { ShortcutField } from "./ShortcutField";
 
@@ -18,6 +18,7 @@ export interface DictationTesterProps {
   resultId?: string | number;
   shortcutRegistrationError?: string | null;
   onShortcutRegistrationError?: (message?: string) => void;
+  waylandShortcutStatus?: WaylandHoldShortcutEvent;
 }
 
 export interface DictationTesterHandle {
@@ -37,6 +38,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
   resultId,
   shortcutRegistrationError,
   onShortcutRegistrationError,
+  waylandShortcutStatus,
 }, ref) {
   const [text, setText] = useState("");
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -143,6 +145,11 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
       />
       {copiedOnlyMessage && <p className="dictation-tester__result" role="status">{copiedOnlyMessage}</p>}
       {shortcutRegistrationError && <p className="error-message" role="alert">Atajo global: {shortcutRegistrationError}</p>}
+      {waylandShortcutStatus && (
+        <p className={waylandShortcutStatus.status === "error" ? "error-message" : "dictation-tester__shortcut-status"} role={waylandShortcutStatus.status === "error" ? "alert" : "status"}>
+          {formatWaylandShortcutStatus(waylandShortcutStatus)}
+        </p>
+      )}
 
       <fieldset className="choice-list">
         <legend>Modo de grabación</legend>
@@ -177,3 +184,16 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
     </section>
   );
 });
+
+function formatWaylandShortcutStatus(event: WaylandHoldShortcutEvent): string {
+  if (event.status === "error") {
+    return `Atajo Wayland: ${event.message ?? "error"}`;
+  }
+
+  const labels: Record<Exclude<WaylandHoldShortcutEvent["status"], "error">, string> = {
+    registered: "registrado",
+    pressed: "presionado",
+    released: "soltado",
+  };
+  return `Atajo Wayland: ${labels[event.status]}`;
+}
