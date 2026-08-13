@@ -56,6 +56,22 @@ export function AppShell({
   const dictationActionPendingRef = useRef(dictationActionPending);
   const dictationStartingRef = useRef(dictationStarting);
   const waylandReleasePendingRef = useRef(false);
+  const shortcutGenerationRef = useRef(0);
+
+  function createShortcutGeneration(): number {
+    shortcutGenerationRef.current += 1;
+    return shortcutGenerationRef.current;
+  }
+
+  function invalidateShortcutGeneration(generation?: number) {
+    if (generation === undefined || shortcutGenerationRef.current === generation) {
+      shortcutGenerationRef.current += 1;
+    }
+  }
+
+  function isCurrentShortcutGeneration(generation: number): boolean {
+    return shortcutGenerationRef.current === generation;
+  }
 
   function updateRecordingState(nextState: RecordingState) {
     currentRecordingStateRef.current = nextState;
@@ -82,6 +98,7 @@ export function AppShell({
   }, [settings]);
 
   useEffect(() => {
+    const diagnosisGeneration = createShortcutGeneration();
     let cancelled = false;
     setPlatformDiagnosis(undefined);
     setPlatformDiagnosisReady(false);
@@ -93,6 +110,7 @@ export function AppShell({
       setPlatformDiagnosisReady(true);
       return () => {
         cancelled = true;
+        invalidateShortcutGeneration(diagnosisGeneration);
       };
     }
 
@@ -108,6 +126,7 @@ export function AppShell({
 
     return () => {
       cancelled = true;
+      invalidateShortcutGeneration(diagnosisGeneration);
     };
   }, [activeBridge]);
 
@@ -222,7 +241,7 @@ export function AppShell({
     const configureWaylandHoldShortcut = activeBridge.configureWaylandHoldShortcut;
     const clearWaylandHoldShortcut = activeBridge.clearWaylandHoldShortcut;
     if (!platformDiagnosisReady || !useWaylandHoldPortal || shortcutCaptureActive) {
-      if (!useWaylandHoldPortal) setWaylandShortcutStatus(undefined);
+      if (!useWaylandHoldPortal || shortcutCaptureActive) setWaylandShortcutStatus(undefined);
       return;
     }
     if (!onWaylandHoldShortcut || !configureWaylandHoldShortcut || !clearWaylandHoldShortcut) {
@@ -235,6 +254,7 @@ export function AppShell({
     const subscribeToWaylandShortcut = onWaylandHoldShortcut;
     const configurePortalShortcut = configureWaylandHoldShortcut;
     const clearPortalShortcut = clearWaylandHoldShortcut;
+    const generation = createShortcutGeneration();
 
     let disposed = false;
     let listenerRemoved = false;
@@ -249,14 +269,17 @@ export function AppShell({
 
     async function configurePortal() {
       try {
-        unlisten = await subscribeToWaylandShortcut((event) => waylandShortcutHandlerRef.current(event));
+        unlisten = await subscribeToWaylandShortcut((event) => {
+          if (!isCurrentShortcutGeneration(generation)) return;
+          waylandShortcutHandlerRef.current(event);
+        });
         if (disposed) {
           removeListener();
           return;
         }
         await configurePortalShortcut(shortcut);
       } catch (error: unknown) {
-        if (!disposed) {
+        if (!disposed && isCurrentShortcutGeneration(generation)) {
           setWaylandShortcutStatus({
             status: "error",
             message: getErrorMessage(error, "No se pudo registrar el atajo Wayland"),
@@ -269,6 +292,7 @@ export function AppShell({
     const configuration = configurePortal();
     return () => {
       disposed = true;
+      invalidateShortcutGeneration(generation);
       waylandReleasePendingRef.current = false;
       removeListener();
       void configuration.then(removeListener).catch(() => undefined);
@@ -293,6 +317,7 @@ export function AppShell({
     ) return;
 
     let disposed = false;
+    const generation = createShortcutGeneration();
     const shortcut = normalizeShortcutForPlatform(currentSettings.shortcut);
     let registered = false;
     let unregisterStarted = false;
@@ -313,25 +338,33 @@ export function AppShell({
       if (disposed) return;
 
       try {
-        await register(shortcut, (event) => shortcutHandlerRef.current(event.state));
+        await register(shortcut, (event) => {
+          if (!isCurrentShortcutGeneration(generation)) return;
+          shortcutHandlerRef.current(event.state);
+        });
         registered = true;
         if (disposed) {
           await unregisterIfRegistered();
-        } else {
+        } else if (isCurrentShortcutGeneration(generation)) {
           setShortcutRegistrationError(null);
         }
       } catch (error: unknown) {
-        if (!disposed) setShortcutRegistrationError(getErrorMessage(error, "No se pudo registrar el atajo global"));
+        if (!disposed && isCurrentShortcutGeneration(generation)) {
+          setShortcutRegistrationError(getErrorMessage(error, "No se pudo registrar el atajo global"));
+        }
       }
     }).catch((error: unknown) => {
-      if (!disposed) setShortcutRegistrationError(getErrorMessage(error, "No se pudo registrar el atajo global"));
+      if (!disposed && isCurrentShortcutGeneration(generation)) {
+        setShortcutRegistrationError(getErrorMessage(error, "No se pudo registrar el atajo global"));
+      }
     });
 
     return () => {
       disposed = true;
+      invalidateShortcutGeneration(generation);
       void registration.then(() => unregisterIfRegistered()).catch(() => undefined);
     };
-  }, [currentSettings.shortcut, platformDiagnosisReady, shortcutCaptureActive, useWaylandHoldPortal]);
+  }, [currentSettings.mode, currentSettings.shortcut, platformDiagnosisReady, shortcutCaptureActive, useWaylandHoldPortal]);
 
   async function startDictation() {
     updateDictationStarting(true);
