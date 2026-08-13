@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { AppSettings } from "../domain/settings";
 
 export interface ModelStatus {
@@ -9,6 +10,35 @@ export interface ModelStatus {
   sizeMiB: number;
   progress?: number;
   error?: string;
+}
+
+export type ModelDownloadPhase =
+  | "connecting"
+  | "downloading"
+  | "validating"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface ModelDownloadProgress {
+  modelId: string;
+  phase: ModelDownloadPhase;
+  downloadedBytes: number;
+  totalBytes?: number;
+  percent?: number;
+  message: string;
+}
+
+interface NativeModelDownloadProgress {
+  modelId?: string;
+  model_id?: string;
+  phase: ModelDownloadPhase;
+  downloadedBytes?: number;
+  downloaded_bytes?: number;
+  totalBytes?: number;
+  total_bytes?: number;
+  percent?: number;
+  message: string;
 }
 
 export interface MicrophoneCheck {
@@ -60,7 +90,10 @@ export interface ChamuBridge {
   loadSettings: () => Promise<AppSettings>;
   saveSettings: (settings: AppSettings) => Promise<void>;
   inspectModel: (modelId?: string) => Promise<ModelStatus>;
-  downloadModel: (modelId: string) => Promise<ModelStatus>;
+  startModelDownload: (modelId: string) => Promise<void>;
+  onModelDownloadProgress: (
+    listener: (progress: ModelDownloadProgress) => void,
+  ) => Promise<() => void>;
   cancelModelDownload: (modelId: string) => Promise<void>;
   testMicrophone: () => Promise<MicrophoneCheck>;
   testShortcut: (shortcut: string) => Promise<ShortcutCheck>;
@@ -105,8 +138,44 @@ export function inspectModel(modelId?: string): Promise<ModelStatus> {
     : invoke<ModelStatus>("inspect_model", { modelId });
 }
 
-export function downloadModel(modelId: string): Promise<ModelStatus> {
-  return invoke<ModelStatus>("download_model", { modelId });
+export function startModelDownload(modelId: string): Promise<void> {
+  return invoke<void>("start_model_download", { modelId });
+}
+
+function toModelDownloadProgress(
+  payload: NativeModelDownloadProgress,
+): ModelDownloadProgress {
+  const modelId = payload.modelId ?? payload.model_id;
+  const downloadedBytes = payload.downloadedBytes ?? payload.downloaded_bytes;
+
+  if (modelId === undefined || downloadedBytes === undefined) {
+    throw new Error("Payload de progreso de descarga inválido");
+  }
+
+  const progress: ModelDownloadProgress = {
+    modelId,
+    phase: payload.phase,
+    downloadedBytes,
+    message: payload.message,
+  };
+
+  const totalBytes = payload.totalBytes ?? payload.total_bytes;
+  if (totalBytes !== undefined) {
+    progress.totalBytes = totalBytes;
+  }
+  if (payload.percent !== undefined) {
+    progress.percent = payload.percent;
+  }
+
+  return progress;
+}
+
+export async function onModelDownloadProgress(
+  listener: (progress: ModelDownloadProgress) => void,
+): Promise<() => void> {
+  return listen<NativeModelDownloadProgress>("model-download-progress", (event) => {
+    listener(toModelDownloadProgress(event.payload));
+  });
 }
 
 export function cancelModelDownload(modelId: string): Promise<void> {
@@ -145,7 +214,8 @@ export const nativeBridge: ChamuBridge = {
   loadSettings,
   saveSettings,
   inspectModel,
-  downloadModel,
+  startModelDownload,
+  onModelDownloadProgress,
   cancelModelDownload,
   testMicrophone,
   testShortcut,
