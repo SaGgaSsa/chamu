@@ -216,6 +216,7 @@ fn model_download_temp_path(destination: &Path) -> PathBuf {
 }
 
 const DOWNLOAD_CANCELLED_MESSAGE: &str = "Descarga cancelada";
+const MODEL_DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn model_download_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
     total_bytes
@@ -830,9 +831,12 @@ fn perform_model_download(
         return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
     }
 
-    let client = reqwest::blocking::Client::builder()
+    let client_builder: reqwest::blocking::ClientBuilder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
+        .read_timeout(MODEL_DOWNLOAD_READ_TIMEOUT)
         .timeout(Duration::from_secs(60))
+        .into();
+    let client = client_builder
         .build()
         .map_err(|error| format!("No se pudo preparar la descarga: {error}"))?;
     let mut response = client
@@ -1175,5 +1179,11 @@ mod tests {
         let json = serde_json::to_value(unknown_total).expect("serialize progress");
         assert!(json.get("totalBytes").is_none());
         assert!(json.get("percent").is_none());
+    }
+
+    #[test]
+    fn model_download_read_timeout_is_shorter_than_total_timeout() {
+        assert_eq!(MODEL_DOWNLOAD_READ_TIMEOUT, Duration::from_secs(5));
+        assert!(MODEL_DOWNLOAD_READ_TIMEOUT < Duration::from_secs(60));
     }
 }
