@@ -4,7 +4,7 @@
   "version": "0.1.5",
   "identifier": "com.chamu.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev -- --host 127.0.0.1",
+    "beforeDevCommand": "npm run prepare:desktop-entry && npm run dev -- --host 127.0.0.1",
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
