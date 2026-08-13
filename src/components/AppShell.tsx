@@ -12,6 +12,7 @@ import {
 } from "../native/commands";
 import { PrivacyBadge } from "./PrivacyBadge";
 import { StatusBubble } from "./StatusBubble";
+import { DictationControl } from "./DictationControl";
 
 interface AppShellProps {
   recordingState?: RecordingState;
@@ -267,7 +268,6 @@ export function AppShell({
     }
   }
 
-  const dictationButtonLabel = getDictationButtonLabel(currentRecordingState, dictationActionPending);
   const dictationButtonDisabled = dictationActionPending || currentRecordingState.status === "transcribing";
 
   return (
@@ -282,11 +282,11 @@ export function AppShell({
         </div>
         <div className="header-actions">
           <button className="settings-button" onClick={openSystemCheck} type="button" aria-label="Abrir prueba del sistema">
-            <span aria-hidden="true">✓</span>
+            <CheckIcon />
             <span>Prueba del sistema</span>
           </button>
           <button className="settings-button" onClick={openSettings} type="button" aria-label="Abrir configuración">
-            <span aria-hidden="true">⚙</span>
+            <SettingsIcon />
             <span>Configuración</span>
           </button>
         </div>
@@ -302,16 +302,12 @@ export function AppShell({
           </p>
           <StatusBubble state={currentRecordingState} />
           <div className="dictation-action-row">
-            <button
-              aria-busy={dictationActionPending}
-              className="primary-button dictation-action"
-              data-status={currentRecordingState.status}
+            <DictationControl
               disabled={dictationButtonDisabled}
               onClick={() => void handleDictation()}
-              type="button"
-            >
-              {dictationButtonLabel}
-            </button>
+              pending={dictationActionPending}
+              state={currentRecordingState}
+            />
           </div>
           <div className="shortcut-row">
             <span>Atajo global</span>
@@ -360,7 +356,7 @@ export function AppShell({
               <p className="eyebrow">PREFERENCIAS</p>
               <h2>Configuración</h2>
             </div>
-            <button className="icon-button" onClick={() => setSettingsOpen(false)} type="button" aria-label="Cerrar configuración">×</button>
+            <button className="icon-button" onClick={() => setSettingsOpen(false)} type="button" aria-label="Cerrar configuración"><CloseIcon /></button>
           </div>
           <fieldset className="choice-list">
             <legend>Idioma</legend>
@@ -399,7 +395,7 @@ export function AppShell({
               <p className="eyebrow">PRUEBA LOCAL</p>
               <h2>Prueba del sistema</h2>
             </div>
-            <button className="icon-button" onClick={() => setSystemCheckOpen(false)} type="button" aria-label="Cerrar prueba del sistema">×</button>
+            <button className="icon-button" onClick={() => setSystemCheckOpen(false)} type="button" aria-label="Cerrar prueba del sistema"><CloseIcon /></button>
           </div>
           <p className="system-check-intro">Comprueba modelo, micrófono, portapapeles y pegado sin enviar ni conservar audio o texto.</p>
           <button className="primary-button" disabled={checkingSystem} onClick={() => void runSystemCheck()} type="button">
@@ -429,21 +425,29 @@ function SystemCheckRow({ label, ok, detail }: { label: string; ok: boolean; det
   </div>;
 }
 
-function getDictationButtonLabel(state: RecordingState, pending: boolean): string {
-  if (pending && state.status === "recording") return "Iniciando…";
-  if (pending && state.status === "transcribing") return "Transcribiendo…";
-  switch (state.status) {
-    case "ready":
-      return "Comenzar dictado";
-    case "recording":
-      return "Terminar dictado";
-    case "transcribing":
-      return "Transcribiendo…";
-    case "copied":
-      return "Nuevo dictado";
-    case "error":
-      return "Reintentar dictado";
-  }
+function CheckIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="16" stroke="currentColor" strokeLinecap="square" strokeWidth="2" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg">
+      <path d="m5 12 4 4L19 6" stroke="currentColor" strokeLinecap="square" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="16" stroke="currentColor" strokeLinecap="square" strokeWidth="2" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.64 5.64l1.41 1.41M16.95 16.95l1.41 1.41M18.36 5.64l-1.41 1.41M7.05 16.95l-1.41 1.41" stroke="currentColor" strokeLinecap="square" strokeWidth="2" />
+      <circle cx="12" cy="12" r="4" stroke="currentColor" strokeLinecap="square" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="16" stroke="currentColor" strokeLinecap="square" strokeWidth="2" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg">
+      <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeLinecap="square" strokeWidth="2" />
+    </svg>
+  );
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
