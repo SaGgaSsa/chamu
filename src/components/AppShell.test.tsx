@@ -10,8 +10,8 @@ import type {
 } from "../native/commands";
 
 const shortcutPlugin = vi.hoisted(() => ({
-  register: vi.fn(async () => undefined),
-  unregister: vi.fn(async () => undefined),
+  register: vi.fn(async (..._args: unknown[]) => undefined),
+  unregister: vi.fn(async (..._args: unknown[]) => undefined),
 }));
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => shortcutPlugin);
@@ -533,6 +533,96 @@ describe("AppShell", () => {
     unmount();
     await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledTimes(2));
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("keeps the global shortcut registered while the effect is active", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    shortcutPlugin.register.mockClear();
+    shortcutPlugin.unregister.mockClear();
+    const bridge = makeBridge({
+      diagnosePlatform: vi.fn(async () => ({
+        session: "x11" as const,
+        shortcutMethod: "x11-global-hook",
+        holdModeSupported: true,
+        toggleModeSupported: true,
+      })),
+    });
+    const { unmount } = render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledWith(
+      "Ctrl+Shift+Space",
+      expect.any(Function),
+    ));
+    expect(shortcutPlugin.unregister).not.toHaveBeenCalled();
+
+    unmount();
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledWith("Ctrl+Shift+Space"));
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("unregisters the previous global shortcut before registering its replacement", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    shortcutPlugin.register.mockClear();
+    shortcutPlugin.unregister.mockClear();
+    const events: string[] = [];
+    shortcutPlugin.register.mockImplementation(async (...args: unknown[]) => {
+      events.push(`register:${String(args[0])}`);
+    });
+    shortcutPlugin.unregister.mockImplementation(async (...args: unknown[]) => {
+      events.push(`unregister:${String(args[0])}`);
+    });
+    const bridge = makeBridge({
+      diagnosePlatform: vi.fn(async () => ({
+        session: "x11" as const,
+        shortcutMethod: "x11-global-hook",
+        holdModeSupported: true,
+        toggleModeSupported: true,
+      })),
+    });
+    const { unmount } = render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(events).toEqual(["register:Ctrl+Shift+Space"]));
+    fireEvent.click(screen.getByRole("button", { name: /capturar atajo/i }));
+    fireEvent.keyDown(screen.getByRole("button", { name: /pulsa el atajo/i }), {
+      code: "KeyA",
+      key: "a",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+
+    await waitFor(() => expect(events).toEqual([
+      "register:Ctrl+Shift+Space",
+      "unregister:Ctrl+Shift+Space",
+      "register:Ctrl+Shift+A",
+    ]));
+    expect(shortcutPlugin.unregister).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledTimes(2));
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("requests portal configuration after recapturing the same saved shortcut", async () => {
+    const { bridge, emitWaylandShortcut } = makeWaylandBridge();
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenCalledWith(
+      DEFAULT_SETTINGS.shortcut,
+    ));
+    await emitWaylandShortcut({ status: "registered", triggerDescription: "Ctrl+Alt+A" });
+
+    fireEvent.click(screen.getByRole("button", { name: /capturar atajo/i }));
+    fireEvent.keyDown(screen.getByRole("button", { name: /pulsa el atajo/i }), {
+      code: "Space",
+      key: " ",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+
+    await waitFor(() => expect(bridge.configureWaylandHoldShortcut).toHaveBeenLastCalledWith(
+      DEFAULT_SETTINGS.shortcut,
+      { requestConfiguration: true },
+    ));
   });
 
   it("unregisters a shortcut after a pending registration resolves during unmount", async () => {

@@ -13,6 +13,7 @@ export interface DictationTesterProps {
   starting?: boolean;
   microphoneName?: string;
   onDictationClick: () => void | Promise<void>;
+  onShortcutCaptured?: (shortcut: string) => void;
   onCapturingChange?: (capturing: boolean) => void;
   resultText?: DictationResult["text"];
   resultId?: string | number;
@@ -33,6 +34,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
   starting = false,
   microphoneName = "Micrófono predeterminado del sistema",
   onDictationClick,
+  onShortcutCaptured,
   onCapturingChange,
   resultText,
   resultId,
@@ -177,7 +179,10 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
 
       <ShortcutField
         value={settings.shortcut}
-        onChange={(shortcut) => onSettingsChange({ ...settings, shortcut })}
+        onChange={(shortcut) => {
+          onSettingsChange({ ...settings, shortcut });
+          onShortcutCaptured?.(shortcut);
+        }}
         onError={onShortcutRegistrationError}
         onCapturingChange={onCapturingChange}
       />

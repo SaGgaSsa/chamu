@@ -63,6 +63,7 @@ export function AppShell({
   const waylandStopStartedRef = useRef(false);
   const waylandRegisteredShortcutRef = useRef<string | undefined>(undefined);
   const waylandTriggerDescriptionRef = useRef<string | undefined>(undefined);
+  const waylandConfigurationRequestedRef = useRef(false);
   const globalShortcutCleanupRef = useRef<Promise<void>>(Promise.resolve());
   const shortcutGenerationRef = useRef(0);
 
@@ -188,6 +189,12 @@ export function AppShell({
     });
   }
 
+  function handleShortcutCaptured() {
+    if (currentSettings.mode === "hold") {
+      waylandConfigurationRequestedRef.current = true;
+    }
+  }
+
   function restartOnboarding() {
     setSettingsOpen(false);
     onRestartOnboarding?.();
@@ -301,7 +308,9 @@ export function AppShell({
     let cleanupRetryCount = 0;
     let cleanupRetryTimer: ReturnType<typeof setTimeout> | undefined;
     const shortcut = currentSettings.shortcut;
-    const requestConfiguration = shouldRequestWaylandShortcutConfiguration(
+    const explicitConfigurationRequest = waylandConfigurationRequestedRef.current;
+    waylandConfigurationRequestedRef.current = false;
+    const requestConfiguration = explicitConfigurationRequest || shouldRequestWaylandShortcutConfiguration(
       waylandRegisteredShortcutRef.current,
       shortcut,
       waylandTriggerDescriptionRef.current !== undefined,
@@ -408,6 +417,10 @@ export function AppShell({
     let unregisterStarted = false;
     let unregisterShortcut: ((shortcut: string) => Promise<void>) | undefined;
     const previousCleanup = globalShortcutCleanupRef.current;
+    let resolveCleanup: () => void = () => undefined;
+    const cleanupComplete = new Promise<void>((resolve) => {
+      resolveCleanup = resolve;
+    });
 
     async function unregisterIfRegistered() {
       if (!registered || unregisterStarted || !unregisterShortcut) return;
@@ -429,9 +442,7 @@ export function AppShell({
           shortcutHandlerRef.current(event.state);
         });
         registered = true;
-        if (disposed) {
-          await unregisterIfRegistered();
-        } else if (isCurrentShortcutGeneration(generation)) {
+        if (!disposed && isCurrentShortcutGeneration(generation)) {
           setShortcutRegistrationError(null);
         }
       } catch (error: unknown) {
@@ -445,13 +456,15 @@ export function AppShell({
       }
     });
 
-    const cleanup = registration.then(() => unregisterIfRegistered()).catch(() => undefined);
-    globalShortcutCleanupRef.current = cleanup;
+    globalShortcutCleanupRef.current = cleanupComplete;
 
     return () => {
       disposed = true;
       invalidateShortcutGeneration(generation);
-      globalShortcutCleanupRef.current = cleanup;
+      void registration
+        .then(() => unregisterIfRegistered())
+        .catch(() => undefined)
+        .finally(resolveCleanup);
     };
   }, [currentSettings.shortcut, platformDiagnosisReady, shortcutCaptureActive, useWaylandHoldPortal]);
 
@@ -567,6 +580,7 @@ export function AppShell({
           starting={dictationStarting}
           microphoneName={microphoneName}
           onDictationClick={() => void handleDictation()}
+          onShortcutCaptured={handleShortcutCaptured}
           resultText={dictationResult?.text}
           resultId={dictationResult?.id}
           shortcutRegistrationError={shortcutRegistrationError}

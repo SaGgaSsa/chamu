@@ -163,6 +163,24 @@ pub(crate) fn stream_end_error(stream: &str) -> String {
     format!("El stream portal {stream} terminó sin cancelación")
 }
 
+pub(crate) fn shortcut_change_trigger_description<'a, I>(
+    event_session_handle: &str,
+    expected_session_handle: &str,
+    shortcuts: I,
+) -> Option<String>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    if event_session_handle != expected_session_handle {
+        return None;
+    }
+
+    shortcuts
+        .into_iter()
+        .find(|(shortcut_id, _)| *shortcut_id == SHORTCUT_ID)
+        .map(|(_, trigger_description)| trigger_description.to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortalEventKind {
     Registered,
@@ -509,7 +527,19 @@ async fn run_portal_session_with_session(
         .find(|registered| registered.id() == SHORTCUT_ID)
         .ok_or_else(|| "El portal no asignó el atajo Wayland solicitado".to_string())?;
     let mut trigger_description = assigned.trigger_description().to_string();
-    let configuration_message = match configuration_action(portal.version(), request_configuration) {
+    let configuration_decision = configuration_action(portal.version(), request_configuration);
+    let mut shortcuts_changed = if configuration_decision == PortalConfigurationAction::Configure {
+        Some(
+            tokio::select! {
+                result = portal.receive_shortcuts_changed() => result,
+                _ = &mut *cancel => return Ok(SessionRunOutcome::Cancelled),
+            }
+            .map_err(|error| format!("No se pudo escuchar los cambios del atajo Wayland: {error}"))?,
+        )
+    } else {
+        None
+    };
+    let configuration_message = match configuration_decision {
         PortalConfigurationAction::BindOnly => None,
         PortalConfigurationAction::Configure => {
             tokio::select! {
@@ -595,6 +625,34 @@ async fn run_portal_session_with_session(
                     &session_handle,
                 ) {
                     emit_event_if_current(app, generation, PortalEventKind::Deactivated, None, None)?;
+                }
+            }
+            changed_event = async {
+                match shortcuts_changed.as_mut() {
+                    Some(stream) => stream.next().await,
+                    None => futures_util::future::pending::<Option<_>>().await,
+                }
+            } => {
+                let event = match changed_event {
+                    Some(event) => event,
+                    None => return Err(stream_end_error("shortcuts_changed")),
+                };
+                let trigger_description = shortcut_change_trigger_description(
+                    event.session_handle().as_str(),
+                    &session_handle,
+                    event
+                        .shortcuts()
+                        .iter()
+                        .map(|shortcut| (shortcut.id(), shortcut.trigger_description())),
+                );
+                if let Some(trigger_description) = trigger_description {
+                    emit_event_if_current(
+                        app,
+                        generation,
+                        PortalEventKind::Registered,
+                        Some("La asignación del portal se actualizó".into()),
+                        Some(trigger_description),
+                    )?;
                 }
             }
             closed_event = closed.next() => {
@@ -900,8 +958,8 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 #[cfg(test)]
 mod tests {
     use super::{
-        configuration_action, event_matches_session, is_current_generation, stream_end_error,
-        to_xdg_trigger, validate_shortcut,
+        configuration_action, event_matches_session, is_current_generation,
+        shortcut_change_trigger_description, stream_end_error, to_xdg_trigger, validate_shortcut,
         CleanupPolicy, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
         PortalConfigurationAction, CLEANUP_POLICY, SHORTCUT_ID,
     };
@@ -961,6 +1019,36 @@ mod tests {
         assert_eq!(
             configuration_action(2, true),
             PortalConfigurationAction::Configure
+        );
+    }
+
+    #[test]
+    fn filters_shortcuts_changed_by_session_and_shortcut_id() {
+        let session = "/org/freedesktop/portal/desktop/session/1";
+        let other_session = "/org/freedesktop/portal/desktop/session/2";
+        assert_eq!(
+            shortcut_change_trigger_description(
+                session,
+                session,
+                [("other_shortcut", "Ctrl+Alt+B"), (SHORTCUT_ID, "Ctrl+Alt+A")],
+            ),
+            Some("Ctrl+Alt+A".to_string())
+        );
+        assert_eq!(
+            shortcut_change_trigger_description(
+                other_session,
+                session,
+                [(SHORTCUT_ID, "Ctrl+Alt+A")],
+            ),
+            None
+        );
+        assert_eq!(
+            shortcut_change_trigger_description(
+                session,
+                session,
+                [("other_shortcut", "Ctrl+Alt+B")],
+            ),
+            None
         );
     }
 
