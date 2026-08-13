@@ -10,6 +10,8 @@ function renderTester(overrides: Partial<{
   settings: AppSettings;
   state: RecordingState;
   pending: boolean;
+  starting?: boolean;
+  microphoneName?: string;
   resultText?: string;
   resultId?: string | number;
   shortcutRegistrationError?: string | null;
@@ -22,6 +24,8 @@ function renderTester(overrides: Partial<{
     onSettingsChange,
     state: { status: "ready" } as RecordingState,
     pending: false,
+    starting: false,
+    microphoneName: undefined,
     onDictationClick,
     resultText: undefined,
     resultId: undefined,
@@ -152,5 +156,11 @@ describe("DictationTester", () => {
       ...DEFAULT_SETTINGS,
       shortcut: "CommandOrControl+Shift+A",
     });
+  });
+
+  it("shows the active microphone name", () => {
+    renderTester({ microphoneName: "Micrófono USB" });
+
+    expect(screen.getByText("Micrófono activo: Micrófono USB")).toBeVisible();
   });
 });

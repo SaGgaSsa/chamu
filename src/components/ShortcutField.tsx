@@ -164,6 +164,7 @@ export interface ShortcutFieldProps {
   value: string;
   onChange: (shortcut: string) => void;
   onError?: (message?: string) => void;
+  onCapturingChange?: (capturing: boolean) => void;
   label?: string;
   disabled?: boolean;
 }
@@ -180,11 +181,13 @@ export function ShortcutField({
   value,
   onChange,
   onError,
+  onCapturingChange,
   label = "Atajo global",
   disabled = false,
 }: ShortcutFieldProps) {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string>();
+  const [capturePreview, setCapturePreview] = useState<string | null>(null);
   const captureButtonRef = useRef<HTMLButtonElement>(null);
 
   function reportError(message?: string) {
@@ -192,11 +195,34 @@ export function ShortcutField({
     onError?.(message);
   }
 
+  function clearError() {
+    if (error !== undefined) onError?.(undefined);
+    setError(undefined);
+  }
+
   function startCapture() {
     if (disabled) return;
-    reportError(undefined);
+    clearError();
+    setCapturePreview(null);
     setCapturing(true);
+    onCapturingChange?.(true);
     captureButtonRef.current?.focus();
+  }
+
+  function cancelCapture() {
+    setCapturing(false);
+    setCapturePreview(null);
+    clearError();
+    onCapturingChange?.(false);
+  }
+
+  function modifierPreview(event: ReactKeyboardEvent<HTMLButtonElement>): string {
+    const modifiers: string[] = [];
+    if (event.ctrlKey) modifiers.push("Ctrl");
+    if (event.altKey) modifiers.push("Alt");
+    if (event.shiftKey) modifiers.push("Shift");
+    if (event.metaKey) modifiers.push("Meta");
+    return `${modifiers.join(" + ")} + …`;
   }
 
   function captureKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
@@ -205,11 +231,26 @@ export function ShortcutField({
     event.preventDefault();
     event.stopPropagation();
 
+    if (event.key === "Escape" || event.code === "Escape" || event.key === "Esc") {
+      cancelCapture();
+      return;
+    }
+
+    const mainKey = normalizeMainKey(event.nativeEvent);
+    const hasModifiers = event.ctrlKey || event.altKey || event.shiftKey || event.metaKey;
+    if (!mainKey && hasModifiers) {
+      setCapturePreview(modifierPreview(event));
+      clearError();
+      return;
+    }
+
     const result = normalizeShortcutFromKeyboardEvent(event.nativeEvent);
     if (result.shortcut) {
       onChange(result.shortcut);
       setCapturing(false);
+      setCapturePreview(null);
       reportError(undefined);
+      onCapturingChange?.(false);
       return;
     }
 
@@ -220,7 +261,7 @@ export function ShortcutField({
     <div className="shortcut-field">
       <span className="shortcut-field__label">{label}</span>
       <output className="shortcut-field__value" aria-label={`${label}: valor actual`}>
-        {value || "Sin definir"}
+        {(capturing && capturePreview !== null ? capturePreview : value) || "Sin definir"}
       </output>
       <button
         ref={captureButtonRef}

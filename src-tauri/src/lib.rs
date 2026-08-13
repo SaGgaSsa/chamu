@@ -109,6 +109,12 @@ struct MicrophoneCheck {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MicrophoneInfo {
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ShortcutCheck {
     ok: bool,
     captured: String,
@@ -1005,6 +1011,13 @@ fn test_microphone() -> MicrophoneCheck {
 }
 
 #[tauri::command]
+fn get_microphone_info() -> MicrophoneInfo {
+    MicrophoneInfo {
+        name: audio_capture::default_input_device_name(),
+    }
+}
+
+#[tauri::command]
 fn test_shortcut(shortcut: String) -> ShortcutCheck {
     let diagnosis = detect_platform();
     let trimmed = shortcut.trim();
@@ -1157,6 +1170,7 @@ pub fn run() {
             cancel_model_download,
             diagnose_platform,
             test_microphone,
+            get_microphone_info,
             test_shortcut,
             test_clipboard,
             test_paste,

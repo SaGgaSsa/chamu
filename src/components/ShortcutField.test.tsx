@@ -98,7 +98,7 @@ describe("ShortcutField", () => {
     expect(onError).toHaveBeenLastCalledWith(undefined);
   });
 
-  it("reports an invalid modifier-only capture", () => {
+  it("previews an incomplete modifier-only capture", () => {
     const onChange = vi.fn();
     const onError = vi.fn();
     render(<ShortcutField value={DEFAULT_SHORTCUT} onChange={onChange} onError={onError} />);
@@ -112,8 +112,70 @@ describe("ShortcutField", () => {
     });
 
     expect(onChange).not.toHaveBeenCalled();
-    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/tecla principal/i));
-    expect(screen.getByRole("alert")).toHaveTextContent(/tecla principal/i);
+    expect(onError).not.toHaveBeenCalled();
+    expect(screen.getByText(/shift.*…/i)).toBeVisible();
+  });
+
+  it("keeps capturing and previews a modifier-only input", () => {
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    const onCapturingChange = vi.fn();
+    render(
+      <ShortcutField
+        value={DEFAULT_SHORTCUT}
+        onChange={onChange}
+        onError={onError}
+        onCapturingChange={onCapturingChange}
+      />,
+    );
+
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    fireEvent.keyDown(screen.getByRole("button", { name: /pulsa el atajo/i }), {
+      code: "ControlLeft",
+      key: "Control",
+      ctrlKey: true,
+    });
+
+    expect(screen.getByText(/ctrl.*…/i)).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(onCapturingChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("cancels capture with Escape and ignores a later main key", () => {
+    const onChange = vi.fn();
+    const onCapturingChange = vi.fn();
+    render(
+      <ShortcutField
+        value={DEFAULT_SHORTCUT}
+        onChange={onChange}
+        onCapturingChange={onCapturingChange}
+      />,
+    );
+
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    const capturingButton = screen.getByRole("button", { name: /pulsa el atajo/i });
+    fireEvent.keyDown(capturingButton, {
+      code: "ControlLeft",
+      key: "Control",
+      ctrlKey: true,
+    });
+    fireEvent.keyDown(capturingButton, { code: "Escape", key: "Escape" });
+
+    expect(screen.getByText(DEFAULT_SHORTCUT)).toBeVisible();
+    expect(screen.getByRole("button", { name: /capturar atajo/i })).toBeVisible();
+    expect(onCapturingChange).toHaveBeenLastCalledWith(false);
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(captureButton, {
+      code: "KeyA",
+      key: "a",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

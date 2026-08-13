@@ -21,6 +21,7 @@ function makeBridge(): ChamuBridge {
     onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(),
     testMicrophone: vi.fn(),
+    getMicrophoneInfo: vi.fn(async () => ({ name: "Micrófono USB" })),
     testShortcut: vi.fn(),
     testClipboard: vi.fn(),
     testPaste: vi.fn(),
@@ -110,10 +111,11 @@ describe("AppShell", () => {
     expect(screen.queryByRole("button", { name: /reproducir audio/i })).toBeNull();
   });
 
-  it("does not render history or the system check in the main view", () => {
+  it("does not render history or the system check in the main view", async () => {
     const bridge = makeBridge();
     render(<AppShell bridge={bridge} />);
 
+    await waitFor(() => expect(screen.getByText("Micrófono activo: Micrófono USB")).toBeVisible());
     expect(screen.queryByRole("heading", { name: /historial/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /prueba del sistema/i })).toBeNull();
     expect(bridge.loadHistory).not.toHaveBeenCalled();
@@ -202,8 +204,57 @@ describe("AppShell", () => {
     });
   });
 
+  it("shows microphone preparation while native capture is starting", async () => {
+    const bridge = makeBridge();
+    let resolveStart: ((result: DictationResult) => void) | undefined;
+    bridge.startDictation = vi.fn(() => new Promise<DictationResult>((resolve) => {
+      resolveStart = resolve;
+    }));
+
+    render(<AppShell bridge={bridge} />);
+
+    const startButton = screen.getByRole("button", { name: /comenzar dictado/i });
+    fireEvent.click(startButton);
+
+    expect(screen.getByText("Preparando micrófono…")).toBeVisible();
+    expect(startButton).toBeDisabled();
+
+    resolveStart?.({ status: "recording" });
+    await waitFor(() => expect(screen.getAllByRole("status")[0]).toHaveTextContent("Grabando"));
+    expect(screen.queryByText("Preparando micrófono…")).toBeNull();
+  });
+
+  it("pauses the global shortcut while capturing a replacement", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    shortcutPlugin.register.mockClear();
+    shortcutPlugin.unregister.mockClear();
+    const bridge = makeBridge();
+    const { unmount } = render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledWith(
+      "Ctrl+Shift+Space",
+      expect.any(Function),
+    ));
+    const registrationsBeforeCapture = shortcutPlugin.register.mock.calls.length;
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledWith("Ctrl+Shift+Space"));
+    expect(shortcutPlugin.register).toHaveBeenCalledTimes(registrationsBeforeCapture);
+
+    const capturingButton = screen.getByRole("button", { name: /pulsa el atajo/i });
+    fireEvent.keyDown(capturingButton, { code: "Escape", key: "Escape" });
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledTimes(registrationsBeforeCapture + 1));
+
+    unmount();
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledTimes(2));
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
   it("unregisters a shortcut after a pending registration resolves during unmount", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    shortcutPlugin.register.mockClear();
+    shortcutPlugin.unregister.mockClear();
     const lifecycle: string[] = [];
     let resolveRegister: (() => void) | undefined;
     const registerPromise = new Promise<undefined>((resolve) => {

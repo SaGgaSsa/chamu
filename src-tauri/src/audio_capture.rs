@@ -18,6 +18,22 @@ use crate::audio_adapter::{
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CAPTURE_SAMPLES: usize = 16_000 * 60 * 30;
+pub const DEFAULT_MICROPHONE_NAME: &str = "Micrófono predeterminado del sistema";
+
+/// Returns a usable display name without exposing any audio data.
+pub fn microphone_name(name: Option<&str>) -> String {
+    name.filter(|value| !value.trim().is_empty())
+        .unwrap_or(DEFAULT_MICROPHONE_NAME)
+        .to_string()
+}
+
+/// Reads only the system default input device name.
+pub fn default_input_device_name() -> String {
+    let name = cpal::default_host()
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    microphone_name(name.as_deref())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -435,7 +451,17 @@ fn set_callback_error(callback_error: &CallbackError, message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureFinalization, CaptureSessionPolicy, SessionState};
+    use super::{
+        microphone_name, CaptureFinalization, CaptureSessionPolicy, SessionState,
+        DEFAULT_MICROPHONE_NAME,
+    };
+
+    #[test]
+    fn microphone_name_uses_the_device_name_or_system_fallback() {
+        assert_eq!(microphone_name(Some("Micrófono USB")), "Micrófono USB");
+        assert_eq!(microphone_name(None), DEFAULT_MICROPHONE_NAME);
+        assert_eq!(microphone_name(Some("  ")), DEFAULT_MICROPHONE_NAME);
+    }
 
     #[test]
     fn policy_allows_one_session_and_rejects_a_second_start() {

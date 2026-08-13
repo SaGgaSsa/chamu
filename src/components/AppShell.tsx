@@ -35,6 +35,9 @@ export function AppShell({
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [dictationActionPending, setDictationActionPending] = useState(false);
+  const [dictationStarting, setDictationStarting] = useState(false);
+  const [microphoneName, setMicrophoneName] = useState<string>();
+  const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   const [dictationResult, setDictationResult] = useState<{
     text?: DictationResult["text"];
     id: string | number;
@@ -52,6 +55,22 @@ export function AppShell({
     setCurrentSettings(settings);
     setDraftSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadMicrophoneInfo = activeBridge.getMicrophoneInfo;
+    if (!loadMicrophoneInfo) return;
+
+    void loadMicrophoneInfo().then((info) => {
+      if (!cancelled) setMicrophoneName(info.name);
+    }).catch(() => {
+      // The tester renders the safe system fallback when the native probe is unavailable.
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBridge]);
 
   function openSettings() {
     setDraftSettings(currentSettings);
@@ -88,7 +107,7 @@ export function AppShell({
   }
 
   async function handleDictation() {
-    if (dictationActionPending || currentRecordingState.status === "transcribing") return;
+    if (dictationActionPending || dictationStarting || currentRecordingState.status === "transcribing") return;
 
     if (currentRecordingState.status === "recording") {
       await stopDictation();
@@ -112,7 +131,11 @@ export function AppShell({
   };
 
   useEffect(() => {
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    if (
+      shortcutCaptureActive
+      || typeof window === "undefined"
+      || !("__TAURI_INTERNALS__" in window)
+    ) return;
 
     let disposed = false;
     const shortcut = normalizeShortcutForPlatform(currentSettings.shortcut);
@@ -153,9 +176,10 @@ export function AppShell({
       disposed = true;
       void registration.then(() => unregisterIfRegistered()).catch(() => undefined);
     };
-  }, [currentSettings.shortcut]);
+  }, [currentSettings.shortcut, shortcutCaptureActive]);
 
   async function startDictation() {
+    setDictationStarting(true);
     setDictationActionPending(true);
     try {
       if (!activeBridge.startDictation) {
@@ -166,6 +190,7 @@ export function AppShell({
     } catch (error: unknown) {
       setCurrentRecordingState({ status: "error", message: getErrorMessage(error, "No se pudo iniciar el dictado") });
     } finally {
+      setDictationStarting(false);
       setDictationActionPending(false);
     }
   }
@@ -250,11 +275,14 @@ export function AppShell({
           onSettingsChange={handleTesterSettingsChange}
           state={currentRecordingState}
           pending={dictationActionPending}
+          starting={dictationStarting}
+          microphoneName={microphoneName}
           onDictationClick={() => void handleDictation()}
           resultText={dictationResult?.text}
           resultId={dictationResult?.id}
           shortcutRegistrationError={shortcutRegistrationError}
           onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}
+          onCapturingChange={setShortcutCaptureActive}
         />
         {settingsSaveError && <p className="error-message" role="alert">{settingsSaveError}</p>}
       </div>

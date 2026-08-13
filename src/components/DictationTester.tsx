@@ -10,7 +10,10 @@ export interface DictationTesterProps {
   onSettingsChange: (settings: AppSettings) => void;
   state: RecordingState;
   pending: boolean;
+  starting?: boolean;
+  microphoneName?: string;
   onDictationClick: () => void | Promise<void>;
+  onCapturingChange?: (capturing: boolean) => void;
   resultText?: DictationResult["text"];
   resultId?: string | number;
   shortcutRegistrationError?: string | null;
@@ -26,7 +29,10 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
   onSettingsChange,
   state,
   pending,
+  starting = false,
+  microphoneName = "Micrófono predeterminado del sistema",
   onDictationClick,
+  onCapturingChange,
   resultText,
   resultId,
   shortcutRegistrationError,
@@ -111,13 +117,15 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
         </div>
         <div onMouseDown={captureDictationInput}>
           <DictationControl
-            disabled={pending || state.status === "transcribing"}
+            disabled={pending || starting || state.status === "transcribing"}
             onClick={handleDictationClick}
             pending={pending}
             state={state}
           />
         </div>
       </div>
+      {starting && <p className="dictation-tester__preparing" role="status">Preparando micrófono…</p>}
+      <p className="dictation-tester__microphone">Micrófono activo: {microphoneName || "Micrófono predeterminado del sistema"}</p>
 
       <label className="dictation-tester__label" htmlFor="dictation-tester-text">Texto de prueba</label>
       <textarea
@@ -164,6 +172,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
         value={settings.shortcut}
         onChange={(shortcut) => onSettingsChange({ ...settings, shortcut })}
         onError={onShortcutRegistrationError}
+        onCapturingChange={onCapturingChange}
       />
     </section>
   );

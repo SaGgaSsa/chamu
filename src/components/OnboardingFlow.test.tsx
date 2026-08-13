@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
 import {
   type ChamuBridge,
   type ClipboardCheck,
+  type DictationResult,
   type HistoryEntry,
   type MicrophoneCheck,
   type ModelDownloadProgress,
@@ -39,6 +40,7 @@ function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
     onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(async () => undefined),
     testMicrophone: vi.fn(async () => microphone),
+    getMicrophoneInfo: vi.fn(async () => ({ name: "Micrófono USB" })),
     testShortcut: vi.fn(async () => shortcut),
     testClipboard: vi.fn(async () => clipboard),
     testPaste: vi.fn(async () => clipboard),
@@ -219,5 +221,65 @@ describe("OnboardingFlow", () => {
       "Ctrl+Shift+Space",
       expect.any(Function),
     ));
+  });
+
+  it("shows the default microphone name in the setup tester", async () => {
+    const getMicrophoneInfo = vi.fn(async () => ({ name: "Micrófono USB" }));
+    const bridge = makeBridge({ getMicrophoneInfo });
+
+    render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
+    continueStep();
+
+    expect(screen.getByText("Micrófono activo: Micrófono USB")).toBeVisible();
+    expect(getMicrophoneInfo).toHaveBeenCalledOnce();
+  });
+
+  it("shows microphone preparation until native capture starts", async () => {
+    let resolveStart: ((result: DictationResult) => void) | undefined;
+    const bridge = makeBridge({
+      startDictation: vi.fn(() => new Promise<DictationResult>((resolve) => {
+        resolveStart = resolve;
+      })),
+    });
+
+    render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
+    continueStep();
+
+    const startButton = screen.getByRole("button", { name: /comenzar dictado/i });
+    fireEvent.click(startButton);
+
+    expect(screen.getByText("Preparando micrófono…")).toBeVisible();
+    expect(startButton).toBeDisabled();
+
+    resolveStart?.({ status: "recording" });
+    await waitFor(() => expect(screen.getByText("Grabando")).toBeVisible());
+    expect(screen.queryByText("Preparando micrófono…")).toBeNull();
+  });
+
+  it("pauses and resumes the global shortcut while capturing", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "Linux x86_64" });
+    const bridge = makeBridge();
+
+    render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
+    continueStep();
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledWith(
+      "Ctrl+Shift+Space",
+      expect.any(Function),
+    ));
+    const registrationsBeforeCapture = shortcutPlugin.register.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /capturar atajo/i }));
+    await waitFor(() => expect(shortcutPlugin.unregister).toHaveBeenCalledWith("Ctrl+Shift+Space"));
+    expect(shortcutPlugin.register).toHaveBeenCalledTimes(registrationsBeforeCapture);
+
+    fireEvent.keyDown(screen.getByRole("button", { name: /pulsa el atajo/i }), {
+      code: "Escape",
+      key: "Escape",
+    });
+    await waitFor(() => expect(shortcutPlugin.register).toHaveBeenCalledTimes(registrationsBeforeCapture + 1));
   });
 });

@@ -46,6 +46,10 @@ export interface MicrophoneCheck {
   message: string;
 }
 
+export interface MicrophoneInfo {
+  name: string;
+}
+
 export interface ShortcutCheck {
   ok: boolean;
   captured: string;
@@ -96,6 +100,7 @@ export interface ChamuBridge {
   ) => Promise<() => void>;
   cancelModelDownload: (modelId: string) => Promise<void>;
   testMicrophone: () => Promise<MicrophoneCheck>;
+  getMicrophoneInfo?: () => Promise<MicrophoneInfo>;
   testShortcut: (shortcut: string) => Promise<ShortcutCheck>;
   testClipboard: () => Promise<ClipboardCheck>;
   testPaste: () => Promise<ClipboardCheck>;
@@ -186,6 +191,10 @@ export function testMicrophone(): Promise<MicrophoneCheck> {
   return invoke<MicrophoneCheck>("test_microphone");
 }
 
+export function getMicrophoneInfo(): Promise<MicrophoneInfo> {
+  return invoke<MicrophoneInfo>("get_microphone_info");
+}
+
 export function testShortcut(shortcut: string): Promise<ShortcutCheck> {
   return invoke<ShortcutCheck>("test_shortcut", { shortcut });
 }
@@ -218,6 +227,7 @@ export const nativeBridge: ChamuBridge = {
   onModelDownloadProgress,
   cancelModelDownload,
   testMicrophone,
+  getMicrophoneInfo,
   testShortcut,
   testClipboard,
   testPaste,

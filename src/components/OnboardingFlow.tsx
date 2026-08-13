@@ -58,6 +58,9 @@ export function OnboardingFlow({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dictationState, setDictationState] = useState<RecordingState>(createRecordingState);
   const [dictationPending, setDictationPending] = useState(false);
+  const [dictationStarting, setDictationStarting] = useState(false);
+  const [microphoneName, setMicrophoneName] = useState<string>();
+  const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   const [dictationResult, setDictationResult] = useState<{
     text?: DictationResult["text"];
     id: string | number;
@@ -75,6 +78,22 @@ export function OnboardingFlow({
     }).catch((error: unknown) => {
       if (!cancelled) setModelError(getErrorMessage(error, "No se pudo comprobar el modelo"));
     });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadMicrophoneInfo = bridge.getMicrophoneInfo;
+    if (!loadMicrophoneInfo) return;
+
+    void loadMicrophoneInfo().then((info) => {
+      if (!cancelled) setMicrophoneName(info.name);
+    }).catch(() => {
+      // The tester renders the safe system fallback when the native probe is unavailable.
+    });
+
     return () => {
       cancelled = true;
     };
@@ -172,7 +191,7 @@ export function OnboardingFlow({
   }
 
   async function handleDictation() {
-    if (dictationPending || dictationState.status === "transcribing") return;
+    if (dictationPending || dictationStarting || dictationState.status === "transcribing") return;
     if (dictationState.status === "recording") {
       await stopDictation();
       return;
@@ -183,6 +202,7 @@ export function OnboardingFlow({
   }
 
   async function startDictation() {
+    setDictationStarting(true);
     setDictationPending(true);
     try {
       if (!bridge.startDictation) throw new Error("El dictado nativo no está disponible");
@@ -191,6 +211,7 @@ export function OnboardingFlow({
     } catch (error: unknown) {
       setDictationState({ status: "error", message: getErrorMessage(error, "No se pudo iniciar el dictado") });
     } finally {
+      setDictationStarting(false);
       setDictationPending(false);
     }
   }
@@ -208,30 +229,48 @@ export function OnboardingFlow({
   };
 
   useEffect(() => {
-    if (step !== "setup" || typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    if (
+      step !== "setup"
+      || shortcutCaptureActive
+      || typeof window === "undefined"
+      || !("__TAURI_INTERNALS__" in window)
+    ) return;
 
     let disposed = false;
     const shortcut = normalizeShortcutForPlatform(settings.shortcut);
     let registered = false;
+    let unregisterStarted = false;
     let unregisterShortcut: ((shortcut: string) => Promise<void>) | undefined;
+
+    async function unregisterIfRegistered() {
+      if (!registered || unregisterStarted || !unregisterShortcut) return;
+      unregisterStarted = true;
+      try {
+        await unregisterShortcut(shortcut);
+      } catch {
+        // The shortcut is already outside this component's lifecycle.
+      }
+    }
 
     const registration = import("@tauri-apps/plugin-global-shortcut").then(async ({ register, unregister }) => {
       unregisterShortcut = unregister;
       if (disposed) return;
-      await register(shortcut, (event) => shortcutHandlerRef.current(event.state));
-      registered = true;
-      if (disposed) await unregister(shortcut);
+      try {
+        await register(shortcut, (event) => shortcutHandlerRef.current(event.state));
+        registered = true;
+        if (disposed) await unregisterIfRegistered();
+      } catch (error: unknown) {
+        if (!disposed) throw error;
+      }
     }).catch((error: unknown) => {
       if (!disposed) setSaveError(getErrorMessage(error, "No se pudo registrar el atajo global"));
     });
 
     return () => {
       disposed = true;
-      void registration.then(async () => {
-        if (registered && unregisterShortcut) await unregisterShortcut(shortcut);
-      }).catch(() => undefined);
+      void registration.then(() => unregisterIfRegistered()).catch(() => undefined);
     };
-  }, [settings.shortcut, step]);
+  }, [settings.shortcut, shortcutCaptureActive, step]);
 
   async function stopDictation() {
     setDictationState({ status: "transcribing" });
@@ -344,9 +383,12 @@ export function OnboardingFlow({
                 onSettingsChange={setSettings}
                 state={dictationState}
                 pending={dictationPending}
+                starting={dictationStarting}
+                microphoneName={microphoneName}
                 onDictationClick={() => void handleDictation()}
                 resultText={dictationResult?.text}
                 resultId={dictationResult?.id}
+                onCapturingChange={setShortcutCaptureActive}
               />
               {saveError && <p className="error-message">{saveError}</p>}
             </>
