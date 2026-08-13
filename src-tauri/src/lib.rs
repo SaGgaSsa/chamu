@@ -39,7 +39,9 @@ struct RuntimeState {
     downloads: DownloadController,
     diagnostics: Mutex<Vec<DiagnosticRecord>>,
     capture: Mutex<Option<CaptureSessionHandle>>,
-    wayland_shortcut_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    wayland_shortcut_task: Mutex<Option<wayland_shortcut::WaylandShortcutTask>>,
+    wayland_shortcut_operation: tauri::async_runtime::Mutex<()>,
+    wayland_shortcut_generation: std::sync::atomic::AtomicU64,
 }
 
 static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -159,6 +161,8 @@ impl Default for RuntimeState {
             diagnostics: Mutex::new(Vec::new()),
             capture: Mutex::new(None),
             wayland_shortcut_task: Mutex::new(None),
+            wayland_shortcut_operation: tauri::async_runtime::Mutex::new(()),
+            wayland_shortcut_generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
