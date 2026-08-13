@@ -3,6 +3,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 .superpowers/
+.worktrees/
 release.tauri.conf.json
 .env
 .env.*
