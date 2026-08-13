@@ -10,6 +10,9 @@ use ashpd::{
 };
 use futures_util::StreamExt;
 use serde::Serialize;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -21,6 +24,9 @@ const EVENT_NAME: &str = "wayland-hold-shortcut";
 const SHORTCUT_ID: &str = "chamu_hold_dictation";
 const SHORTCUT_DESCRIPTION: &str = "Iniciar dictado mientras se mantiene pulsado";
 const CHAMU_APP_ID: &str = "com.chamu.desktop";
+const HOST_DESKTOP_ENTRY_FILE_NAME: &str = "com.chamu.desktop.desktop";
+const HOST_DESKTOP_ENTRY_CONTENT: &str =
+    include_str!("../resources/com.chamu.desktop.desktop");
 const HOST_REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";
 const CLEANUP_PENDING_MESSAGE: &str =
     "La limpieza de una sesión Wayland anterior todavía está pendiente";
@@ -791,6 +797,58 @@ fn host_registration_error(error: &str) -> String {
     )
 }
 
+fn host_desktop_entry_path(
+    xdg_data_home: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let data_home = xdg_data_home
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            home.filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.join(".local/share"))
+        })
+        .ok_or_else(|| {
+            "No se pudo determinar la ruta de datos para la entrada de escritorio de Chamu; "
+                .to_string()
+                + "define XDG_DATA_HOME o HOME"
+        })?;
+
+    Ok(data_home
+        .join("applications")
+        .join(HOST_DESKTOP_ENTRY_FILE_NAME))
+}
+
+fn ensure_host_desktop_entry() -> Result<(), String> {
+    let xdg_data_home = env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(PathBuf::from);
+    let home = env::var_os("HOME")
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(PathBuf::from);
+    let path = host_desktop_entry_path(xdg_data_home.as_deref(), home.as_deref())?;
+    let directory = path.parent().ok_or_else(|| {
+        format!(
+            "No se pudo determinar el directorio de la entrada de escritorio de Chamu: {}",
+            path.display()
+        )
+    })?;
+
+    fs::create_dir_all(directory).map_err(|error| {
+        format!(
+            "No se pudo crear el directorio de entradas de escritorio de Chamu en {}: {error}",
+            directory.display()
+        )
+    })?;
+    fs::write(&path, HOST_DESKTOP_ENTRY_CONTENT).map_err(|error| {
+        format!(
+            "No se pudo escribir la entrada de escritorio de Chamu en {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn is_missing_host_registry(error: &ashpd::Error) -> bool {
     match error {
         ashpd::Error::PortalNotFound(interface) => interface.as_str() == HOST_REGISTRY_INTERFACE,
@@ -799,6 +857,7 @@ fn is_missing_host_registry(error: &ashpd::Error) -> bool {
 }
 
 async fn register_host_for_global_shortcuts() -> Result<GlobalShortcuts, String> {
+    ensure_host_desktop_entry()?;
     let connection = ashpd::zbus::Connection::session()
         .await
         .map_err(|error| format!("No se pudo conectar al bus de sesión Wayland: {error}"))?;
@@ -992,11 +1051,53 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 mod tests {
     use super::{
         configuration_action, event_matches_session, is_current_generation,
-        host_registration_error, is_missing_host_registry, shortcut_change_trigger_description,
-        stream_end_error, to_xdg_trigger, validate_shortcut, CleanupPolicy,
+        host_desktop_entry_path, host_registration_error, is_missing_host_registry,
+        shortcut_change_trigger_description, stream_end_error, to_xdg_trigger, validate_shortcut,
+        CleanupPolicy,
         PortalConfigurationAction, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
-        CLEANUP_POLICY, HOST_REGISTRY_INTERFACE, SHORTCUT_ID,
+        CLEANUP_POLICY, HOST_DESKTOP_ENTRY_CONTENT, HOST_DESKTOP_ENTRY_FILE_NAME,
+        HOST_REGISTRY_INTERFACE, SHORTCUT_ID,
     };
+
+    use std::path::Path;
+
+    #[test]
+    fn resolves_desktop_entry_under_xdg_data_home_first() {
+        assert_eq!(
+            host_desktop_entry_path(
+                Some(Path::new("/tmp/chamu-xdg-data")),
+                Some(Path::new("/tmp/chamu-home")),
+            )
+            .unwrap(),
+            Path::new("/tmp/chamu-xdg-data/applications/com.chamu.desktop.desktop")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_home_local_share_when_xdg_data_home_is_missing() {
+        assert_eq!(
+            host_desktop_entry_path(None, Some(Path::new("/tmp/chamu-home"))).unwrap(),
+            Path::new("/tmp/chamu-home/.local/share/applications/com.chamu.desktop.desktop")
+        );
+    }
+
+    #[test]
+    fn reports_missing_xdg_data_home_and_home() {
+        let error = host_desktop_entry_path(None, None).unwrap_err();
+
+        assert!(error.contains("XDG_DATA_HOME"));
+        assert!(error.contains("HOME"));
+    }
+
+    #[test]
+    fn embeds_the_desktop_entry_used_for_portal_identification() {
+        assert_eq!(HOST_DESKTOP_ENTRY_FILE_NAME, "com.chamu.desktop.desktop");
+        assert_eq!(
+            HOST_DESKTOP_ENTRY_CONTENT,
+            include_str!("../resources/com.chamu.desktop.desktop")
+        );
+        assert!(HOST_DESKTOP_ENTRY_CONTENT.starts_with("[Desktop Entry]\n"));
+    }
 
     fn interface_name(name: &str) -> ashpd::zbus::names::OwnedInterfaceName {
         name.try_into().expect("test interface name must be valid")

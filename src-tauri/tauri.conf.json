@@ -34,11 +34,6 @@
         "files": {
           "/usr/share/applications/com.chamu.desktop.desktop": "resources/com.chamu.desktop.desktop"
         }
-      },
-      "appimage": {
-        "files": {
-          "/usr/share/applications/com.chamu.desktop.desktop": "resources/com.chamu.desktop.desktop"
-        }
       }
     },
     "license": "MIT",

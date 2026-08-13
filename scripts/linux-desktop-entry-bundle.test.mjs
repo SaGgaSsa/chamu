@@ -18,7 +18,7 @@ const desktopEntryPath = join(
 const packageDesktopEntryPath =
   '/usr/share/applications/com.chamu.desktop.desktop';
 
-test('maps the Chamu desktop entry into both Linux package formats', async () => {
+test('keeps Debian mapping while AppImage uses the runtime host entry', async () => {
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   const expectedSource = 'resources/com.chamu.desktop.desktop';
 
@@ -26,9 +26,6 @@ test('maps the Chamu desktop entry into both Linux package formats', async () =>
     config.bundle.linux.deb.files[packageDesktopEntryPath],
     expectedSource,
   );
-  assert.equal(
-    config.bundle.linux.appimage.files[packageDesktopEntryPath],
-    expectedSource,
-  );
+  assert.equal(config.bundle.linux.appimage, undefined);
   assert.match(await readFile(desktopEntryPath, 'utf8'), /^\[Desktop Entry\]/);
 });
