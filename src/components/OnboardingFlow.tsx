@@ -279,7 +279,7 @@ export function OnboardingFlow({
           </div>
         </section>
       </div>
-      <footer className="app-footer"><span>Sin cuentas · Sin telemetría · Sin nube</span><span>v0.1.4</span></footer>
+      <footer className="app-footer"><span>Sin cuentas · Sin telemetría · Sin nube</span><span>v0.1.5</span></footer>
     </main>
   );
 }

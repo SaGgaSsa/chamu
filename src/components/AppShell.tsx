@@ -439,7 +439,7 @@ export function AppShell({
 
       <footer className="app-footer">
         <span>Sin cuentas · Sin telemetría · Sin nube</span>
-        <span>v0.1.4</span>
+        <span>v0.1.5</span>
       </footer>
     </main>
   );
