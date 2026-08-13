@@ -72,7 +72,7 @@ function RecordingPulse() {
       width="128"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <circle cx="64" cy="64" opacity="0" r="54" stroke="#00ff9c" strokeLinecap="square" strokeWidth="2" />
+      <circle cx="64" cy="64" r="54" stroke="#00ff9c" strokeLinecap="square" strokeWidth="2" />
     </svg>
   );
 }

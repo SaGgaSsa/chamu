@@ -69,6 +69,17 @@ describe("AppShell", () => {
     expect(screen.queryByTestId("dictation-waveform")).not.toBeInTheDocument();
   });
 
+  it("renders a visible pulse circle while recording", () => {
+    render(<AppShell recordingState={{ status: "recording" }} />);
+
+    const pulseCircle = screen
+      .getByRole("button", { name: "Terminar dictado" })
+      .querySelector(".dictation-control__pulse circle");
+
+    expect(pulseCircle).toBeInTheDocument();
+    expect(pulseCircle).not.toHaveAttribute("opacity", "0");
+  });
+
   it("renders the active recording status from state", () => {
     render(<AppShell recordingState={{ status: "recording" }} />);
 

@@ -63,8 +63,9 @@
   --color-status-error: var(--color-error);
   --border-ghost: color-mix(in srgb, var(--color-on-surface) 12%, transparent);
   --border-subtle: color-mix(in srgb, var(--color-outline-variant) 78%, transparent);
-  --border-active: color-mix(in srgb, var(--color-recording) 48%, transparent);
-  --surface-glass: color-mix(in srgb, var(--color-surface-container) 78%, transparent);
+  --border-active: color-mix(in srgb, var(--color-action) 48%, transparent);
+  --border-recording: color-mix(in srgb, var(--color-recording) 48%, transparent);
+  --surface-glass: color-mix(in srgb, var(--color-surface-container) 40%, transparent);
   --surface-glass-hover: color-mix(in srgb, var(--color-surface-container-high) 86%, transparent);
   --surface-success: color-mix(in srgb, var(--color-success) 11%, var(--color-surface-container-low));
   --surface-recording: color-mix(in srgb, var(--color-recording) 12%, var(--color-surface-container-low));
@@ -129,8 +130,12 @@ label {
 button:focus-visible,
 input:focus-visible,
 label:has(input:focus-visible) {
-  outline: 2px solid var(--color-recording);
+  outline: 2px solid var(--color-action);
   outline-offset: 3px;
+}
+
+.dictation-control--recording:focus-visible {
+  outline-color: var(--color-recording);
 }
 
 ::selection {
@@ -200,7 +205,7 @@ h2 {
 
 .app-header {
   display: flex;
-  width: min(100%, 1232px);
+  width: min(100%, 1200px);
   min-height: 76px;
   align-items: center;
   justify-content: space-between;
@@ -224,10 +229,10 @@ h2 {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--color-recording) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-action) 52%, transparent);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-recording) 11%, transparent);
-  color: var(--color-recording);
+  background: color-mix(in srgb, var(--color-action) 11%, transparent);
+  color: var(--color-secondary);
   font-family: var(--font-mono);
   font-size: 26px;
   line-height: 1;
@@ -277,12 +282,12 @@ h2 {
 .settings-button svg {
   width: 16px;
   height: 16px;
-  color: var(--color-recording);
+  color: var(--color-secondary);
 }
 
 .app-content {
   display: flex;
-  width: min(100%, 1232px);
+  width: min(100%, 1200px);
   flex: 1;
   flex-direction: column;
   align-items: center;
@@ -335,13 +340,13 @@ h2 {
   right: 18%;
   left: 18%;
   height: 1px;
-  background: var(--border-active);
+  background: var(--border-subtle);
   content: '';
 }
 
 .eyebrow {
   margin: 0 0 var(--space-3);
-  color: var(--color-success);
+  color: var(--color-on-surface-variant);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -378,9 +383,9 @@ h2 {
   width: 10px;
   height: 10px;
   flex: 0 0 auto;
-  border: 2px solid var(--color-success);
+  border: 2px solid var(--color-action);
   border-radius: var(--radius-full);
-  background: var(--color-success);
+  background: var(--color-action);
 }
 
 .status-bubble__copy {
@@ -407,7 +412,7 @@ h2 {
 }
 
 .status-bubble--recording {
-  border-color: var(--border-active);
+  border-color: var(--border-recording);
   background: var(--surface-recording);
   box-shadow: 0 0 15px color-mix(in srgb, var(--color-recording) 16%, transparent);
 }
@@ -421,6 +426,11 @@ h2 {
 .status-bubble--recording .status-bubble__copy strong,
 .status-bubble--copied .status-bubble__copy strong {
   color: var(--color-recording);
+}
+
+.status-bubble--copied .status-bubble__dot {
+  border-color: var(--color-success);
+  background: var(--color-success);
 }
 
 .status-bubble--transcribing {
@@ -479,7 +489,7 @@ h2 {
   gap: var(--space-2);
   padding: var(--space-4) !important;
   overflow: visible;
-  border: 2px solid var(--color-surface-tint) !important;
+  border: 2px solid var(--color-action) !important;
   border-radius: var(--radius-full) !important;
   background: var(--surface-glass) !important;
   color: var(--color-on-surface) !important;
@@ -492,9 +502,9 @@ h2 {
 }
 
 .dictation-control:hover:not(:disabled) {
-  border-color: var(--color-recording) !important;
-  background: var(--surface-recording) !important;
-  color: var(--color-recording) !important;
+  border-color: var(--color-action-hover) !important;
+  background: var(--surface-action) !important;
+  color: var(--color-secondary) !important;
   transform: translateY(-1px);
 }
 
@@ -569,7 +579,7 @@ h2 {
   height: 100% !important;
   pointer-events: none !important;
   color: var(--color-recording);
-  opacity: 0;
+  opacity: 1;
   animation: dictation-pulse 1.4s ease-out infinite;
 }
 
@@ -643,7 +653,7 @@ kbd {
 
 .app-footer {
   display: flex;
-  width: min(100%, 1232px);
+  width: min(100%, 1200px);
   min-height: 56px;
   align-items: center;
   justify-content: space-between;
@@ -744,7 +754,7 @@ kbd {
 .primary-button {
   border: 1px solid var(--color-action);
   background: var(--color-action);
-  color: var(--color-on-surface);
+  color: var(--color-on-secondary-container);
 }
 
 .primary-button:hover:not(:disabled) {
@@ -1346,6 +1356,6 @@ kbd {
   .dictation-control__waveform,
   .dictation-control__rec,
   .status-bubble--recording .status-bubble__dot {
-    animation: none;
+    animation: none !important;
   }
 }
