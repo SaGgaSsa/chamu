@@ -21,6 +21,7 @@ const EVENT_NAME: &str = "wayland-hold-shortcut";
 const SHORTCUT_ID: &str = "chamu_hold_dictation";
 const SHORTCUT_DESCRIPTION: &str = "Iniciar dictado mientras se mantiene pulsado";
 const CHAMU_APP_ID: &str = "com.chamu.desktop";
+const HOST_REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";
 const CLEANUP_PENDING_MESSAGE: &str =
     "La limpieza de una sesión Wayland anterior todavía está pendiente";
 
@@ -790,15 +791,24 @@ fn host_registration_error(error: &str) -> String {
     )
 }
 
+fn is_missing_host_registry(error: &ashpd::Error) -> bool {
+    match error {
+        ashpd::Error::PortalNotFound(interface) => interface.as_str() == HOST_REGISTRY_INTERFACE,
+        _ => false,
+    }
+}
+
 async fn register_host_for_global_shortcuts() -> Result<GlobalShortcuts, String> {
     let connection = ashpd::zbus::Connection::session()
         .await
         .map_err(|error| format!("No se pudo conectar al bus de sesión Wayland: {error}"))?;
     let app_id = AppID::try_from(CHAMU_APP_ID)
         .map_err(|error| format!("El identificador de Chamu es inválido: {error}"))?;
-    register_host_app_with_connection(connection.clone(), app_id)
-        .await
-        .map_err(|error| host_registration_error(&error.to_string()))?;
+    match register_host_app_with_connection(connection.clone(), app_id).await {
+        Ok(()) => {}
+        Err(error) if is_missing_host_registry(&error) => {}
+        Err(error) => return Err(host_registration_error(&error.to_string())),
+    }
     GlobalShortcuts::with_connection(connection)
         .await
         .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))
@@ -982,10 +992,40 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 mod tests {
     use super::{
         configuration_action, event_matches_session, is_current_generation,
-        host_registration_error, shortcut_change_trigger_description, stream_end_error,
-        to_xdg_trigger, validate_shortcut, CleanupPolicy, PortalConfigurationAction,
-        PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState, CLEANUP_POLICY, SHORTCUT_ID,
+        host_registration_error, is_missing_host_registry, shortcut_change_trigger_description,
+        stream_end_error, to_xdg_trigger, validate_shortcut, CleanupPolicy,
+        PortalConfigurationAction, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
+        CLEANUP_POLICY, HOST_REGISTRY_INTERFACE, SHORTCUT_ID,
     };
+
+    fn interface_name(name: &str) -> ashpd::zbus::names::OwnedInterfaceName {
+        name.try_into().expect("test interface name must be valid")
+    }
+
+    #[test]
+    fn falls_back_only_when_host_registry_interface_is_missing() {
+        let error = ashpd::Error::PortalNotFound(interface_name(HOST_REGISTRY_INTERFACE));
+
+        assert!(is_missing_host_registry(&error));
+    }
+
+    #[test]
+    fn keeps_real_registry_rejections_as_terminal_errors() {
+        let error = ashpd::Error::Portal(ashpd::PortalError::NotAllowed(
+            "Register rejected".into(),
+        ));
+
+        assert!(!is_missing_host_registry(&error));
+    }
+
+    #[test]
+    fn does_not_treat_another_missing_portal_interface_as_registry_fallback() {
+        let error = ashpd::Error::PortalNotFound(interface_name(
+            "org.freedesktop.portal.GlobalShortcuts",
+        ));
+
+        assert!(!is_missing_host_registry(&error));
+    }
 
     #[test]
     fn converts_chamu_shortcut_to_xdg_trigger() {
