@@ -735,7 +735,7 @@ fn start_model_download(
     let worker_model = plan.model;
     let worker_model_id = model_id.clone();
     let worker_destination = destination;
-    let worker_temporary = temporary;
+    let worker_temporary = temporary.clone();
     thread::Builder::new()
         .name(format!("chamu-model-download-{worker_model_id}"))
         .spawn(move || {

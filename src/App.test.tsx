@@ -9,7 +9,8 @@ function makeBridge(): ChamuBridge {
     loadSettings: vi.fn(async () => DEFAULT_SETTINGS),
     saveSettings: vi.fn(async (_settings: AppSettings) => undefined),
     inspectModel: vi.fn(async () => ({ id: "base", name: "Whisper base", installed: true, checksumValid: true, sizeMiB: 142 })),
-    downloadModel: vi.fn(),
+    startModelDownload: vi.fn(),
+    onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(),
     testMicrophone: vi.fn(),
     testShortcut: vi.fn(),
@@ -30,7 +31,7 @@ describe("App", () => {
     const bridge = makeBridge();
     const { unmount } = render(<App bridge={bridge} />);
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: /configura chamu/i })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("heading", { name: /prepara el modelo/i })).toBeVisible());
     expect(screen.queryByRole("heading", { name: /habla\. chamu escribe/i })).toBeNull();
 
     window.localStorage.setItem("chamu:onboarding-complete", "true");

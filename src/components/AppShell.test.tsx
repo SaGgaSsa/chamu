@@ -10,7 +10,8 @@ function makeBridge(): ChamuBridge {
     loadSettings: vi.fn(async () => DEFAULT_SETTINGS),
     saveSettings: vi.fn(async (_settings: AppSettings) => undefined),
     inspectModel: vi.fn(),
-    downloadModel: vi.fn(),
+    startModelDownload: vi.fn(),
+    onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(),
     testMicrophone: vi.fn(),
     testShortcut: vi.fn(),
@@ -79,9 +80,15 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
     expect(screen.getByRole("dialog", { name: /configuración/i })).toBeVisible();
     fireEvent.click(screen.getByRole("radio", { name: /pulsar para alternar/i }));
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    fireEvent.keyDown(captureButton, { code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
     fireEvent.click(screen.getByRole("button", { name: /guardar configuración/i }));
 
-    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" })));
+    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "toggle",
+      shortcut: "CommandOrControl+Shift+A",
+    })));
   });
 
   it("opens the system check and runs the local readiness probes", async () => {

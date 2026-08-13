@@ -1,4 +1,4 @@
-export type TrayMenuItemId = "show" | "settings" | "quit";
+export type TrayMenuItemId = "open" | "close";
 
 export interface TrayMenuItem {
   id: TrayMenuItemId;
@@ -7,8 +7,7 @@ export interface TrayMenuItem {
 
 export function getTrayMenuItems(): TrayMenuItem[] {
   return [
-    { id: "show", label: "Mostrar Chamu" },
-    { id: "settings", label: "Configuración" },
-    { id: "quit", label: "Salir" },
+    { id: "open", label: "Abrir Chamu" },
+    { id: "close", label: "Cerrar Chamu" },
   ];
 }
