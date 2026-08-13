@@ -4,7 +4,6 @@ use ashpd::desktop::{
 };
 use futures_util::StreamExt;
 use serde::Serialize;
-use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
@@ -15,8 +14,28 @@ const SHORTCUT_ID: &str = "chamu_hold_dictation";
 const SHORTCUT_DESCRIPTION: &str = "Iniciar dictado mientras se mantiene pulsado";
 
 pub(crate) struct WaylandShortcutTask {
+    generation: u64,
     cancel: Option<oneshot::Sender<()>>,
     task: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ShortcutLifecycleState {
+    current_generation: u64,
+}
+
+impl ShortcutLifecycleState {
+    fn register_request(&mut self) -> u64 {
+        self.current_generation = self.current_generation.wrapping_add(1);
+        if self.current_generation == 0 {
+            self.current_generation = 1;
+        }
+        self.current_generation
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        is_current_generation(self.current_generation, generation)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -142,6 +161,119 @@ fn key_to_xdg(token: &str) -> String {
     }
 }
 
+fn is_known_main_key(token: &str) -> bool {
+    let normalized = token.trim();
+    let lowercase = normalized.to_ascii_lowercase();
+    matches!(
+        lowercase.as_str(),
+        "space"
+            | "enter"
+            | "return"
+            | "esc"
+            | "escape"
+            | "backspace"
+            | "tab"
+            | "arrowdown"
+            | "down"
+            | "arrowleft"
+            | "left"
+            | "arrowright"
+            | "right"
+            | "arrowup"
+            | "up"
+            | "begin"
+            | "break"
+            | "capslock"
+            | "cancel"
+            | "clear"
+            | "delete"
+            | "end"
+            | "execute"
+            | "find"
+            | "help"
+            | "home"
+            | "insert"
+            | "menu"
+            | "pageup"
+            | "pagedown"
+            | "pause"
+            | "print"
+            | "printscreen"
+            | "redo"
+            | "select"
+            | "scrolllock"
+            | "sysreq"
+            | "undo"
+            | "numpadadd"
+            | "numpaddecimal"
+            | "numpaddivide"
+            | "numpadenter"
+            | "numpadequal"
+            | "numpadmultiply"
+            | "numpadsubtract"
+            | "backquote"
+            | "grave"
+            | "bracketleft"
+            | "bracketright"
+            | "backslash"
+            | "comma"
+            | "equal"
+            | "minus"
+            | "period"
+            | "quote"
+            | "semicolon"
+            | "slash"
+    ) || (normalized.len() == 1 && normalized.as_bytes()[0].is_ascii_alphanumeric())
+        || (lowercase.starts_with("key")
+            && lowercase.len() == 4
+            && lowercase.as_bytes()[3].is_ascii_alphabetic())
+        || (lowercase.starts_with("digit")
+            && lowercase.len() == 6
+            && lowercase.as_bytes()[5].is_ascii_digit())
+        || (lowercase.starts_with('f')
+            && lowercase[1..]
+                .parse::<u8>()
+                .map(|number| (1..=35).contains(&number))
+                .unwrap_or(false))
+}
+
+fn validate_shortcut(shortcut: &str) -> Result<(), String> {
+    if shortcut.trim().is_empty() {
+        return Err("El atajo Wayland no puede estar vacío".into());
+    }
+
+    let tokens = shortcut.split('+').map(str::trim).collect::<Vec<_>>();
+    if tokens.iter().any(|token| token.is_empty()) {
+        return Err("El atajo Wayland contiene un elemento vacío".into());
+    }
+
+    let mut modifier_count = 0;
+    let mut main_key_count = 0;
+    let mut modifiers = Vec::new();
+    for token in tokens {
+        if let Some(modifier) = modifier_to_xdg(token) {
+            modifier_count += 1;
+            if modifiers.contains(&modifier) {
+                return Err("El atajo Wayland no puede repetir modificadores".into());
+            }
+            modifiers.push(modifier);
+        } else if is_known_main_key(token) {
+            main_key_count += 1;
+        } else {
+            return Err(format!("La tecla principal Wayland no es válida: {token}"));
+        }
+    }
+
+    if !(1..=2).contains(&modifier_count) {
+        return Err("El atajo Wayland debe tener uno o dos modificadores".into());
+    }
+    if main_key_count != 1 {
+        return Err("El atajo Wayland debe tener exactamente una tecla principal".into());
+    }
+
+    Ok(())
+}
+
 fn emit_event(
     app: &AppHandle,
     kind: PortalEventKind,
@@ -164,10 +296,11 @@ fn emit_event_if_current(
     message: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    if !is_current_generation(
-        state.wayland_shortcut_generation.load(Ordering::SeqCst),
-        generation,
-    ) {
+    let lifecycle = state
+        .wayland_shortcut_lifecycle
+        .lock()
+        .map_err(|_| "No se pudo comprobar la generación del atajo Wayland".to_string())?;
+    if !lifecycle.is_current(generation) {
         return Ok(());
     }
 
@@ -183,10 +316,10 @@ fn clear_task_for_generation(app: &AppHandle, generation: u64) {
     let Ok(mut active_task) = state.wayland_shortcut_task.lock() else {
         return;
     };
-    if is_current_generation(
-        state.wayland_shortcut_generation.load(Ordering::SeqCst),
-        generation,
-    ) {
+    if active_task
+        .as_ref()
+        .is_some_and(|task| task.generation == generation)
+    {
         active_task.take();
     }
 }
@@ -304,12 +437,43 @@ async fn run_portal_session_with_session(
     }
 }
 
+async fn create_session_with_cancellation(
+    portal: GlobalShortcuts,
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<Option<(GlobalShortcuts, Session<GlobalShortcuts>)>, String> {
+    let mut creation_task = tauri::async_runtime::spawn(async move {
+        let result = portal.create_session(CreateSessionOptions::default()).await;
+        (portal, result)
+    });
+
+    tokio::select! {
+        result = &mut creation_task => {
+            let (portal, session_result) = result
+                .map_err(|error| format!("La tarea de creación de sesión Wayland falló: {error}"))?;
+            let session = session_result
+                .map_err(|error| format!("No se pudo crear la sesión de atajos Wayland: {error}"))?;
+            Ok(Some((portal, session)))
+        }
+        _ = &mut *cancel => {
+            // The exact create request keeps running. If it returns a Session
+            // after cancellation, this detached cleanup task closes it.
+            tauri::async_runtime::spawn(async move {
+                if let Ok((_, Ok(session))) = creation_task.await {
+                    let _ = session.close().await;
+                }
+            });
+            Ok(None)
+        }
+    }
+}
+
 async fn run_portal_session_inner(
     shortcut: String,
     app: &AppHandle,
     generation: u64,
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<(), String> {
+    validate_shortcut(&shortcut)?;
     let trigger = to_xdg_trigger(&shortcut);
     if trigger.is_empty() {
         return Err("El atajo Wayland no puede estar vacío".into());
@@ -320,12 +484,10 @@ async fn run_portal_session_inner(
         _ = &mut cancel => return Ok(()),
     }
     .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))?;
-    // Después de iniciar la creación, espera el identificador de sesión.
-    // Así la cancelación puede cerrar una sesión creada en paralelo.
-    let session = portal
-        .create_session(CreateSessionOptions::default())
-        .await
-        .map_err(|error| format!("No se pudo crear la sesión de atajos Wayland: {error}"))?;
+    let Some((portal, session)) = create_session_with_cancellation(portal, &mut cancel).await?
+    else {
+        return Ok(());
+    };
 
     let result = run_portal_session_with_session(
         &portal,
@@ -388,11 +550,20 @@ async fn stop_active_session(state: &RuntimeState) -> Result<(), String> {
     Ok(())
 }
 
-fn next_generation(state: &RuntimeState) -> u64 {
+fn register_request(state: &RuntimeState) -> Result<u64, String> {
     state
-        .wayland_shortcut_generation
-        .fetch_add(1, Ordering::SeqCst)
-        .wrapping_add(1)
+        .wayland_shortcut_lifecycle
+        .lock()
+        .map(|mut lifecycle| lifecycle.register_request())
+        .map_err(|_| "No se pudo registrar la solicitud del atajo Wayland".to_string())
+}
+
+fn is_current_request(state: &RuntimeState, generation: u64) -> Result<bool, String> {
+    state
+        .wayland_shortcut_lifecycle
+        .lock()
+        .map(|lifecycle| lifecycle.is_current(generation))
+        .map_err(|_| "No se pudo comprobar la solicitud del atajo Wayland".to_string())
 }
 
 #[tauri::command]
@@ -405,10 +576,17 @@ pub(crate) async fn configure_wayland_hold_shortcut(
     if shortcut.is_empty() {
         return Err("El atajo Wayland no puede estar vacío".into());
     }
+    validate_shortcut(&shortcut)?;
 
+    let generation = register_request(&state)?;
     let _operation = state.wayland_shortcut_operation.lock().await;
-    let generation = next_generation(&state);
+    if !is_current_request(&state, generation)? {
+        return Ok(());
+    }
     stop_active_session(&state).await?;
+    if !is_current_request(&state, generation)? {
+        return Ok(());
+    }
 
     let (cancel, cancel_receiver) = oneshot::channel();
     let mut active_task = state
@@ -419,6 +597,7 @@ pub(crate) async fn configure_wayland_hold_shortcut(
         let _ = run_portal_session(shortcut, app, generation, cancel_receiver).await;
     });
     *active_task = Some(WaylandShortcutTask {
+        generation,
         cancel: Some(cancel),
         task,
     });
@@ -429,8 +608,11 @@ pub(crate) async fn configure_wayland_hold_shortcut(
 pub(crate) async fn clear_wayland_hold_shortcut(
     state: State<'_, RuntimeState>,
 ) -> Result<(), String> {
+    let generation = register_request(&state)?;
     let _operation = state.wayland_shortcut_operation.lock().await;
-    next_generation(&state);
+    if !is_current_request(&state, generation)? {
+        return Ok(());
+    }
     stop_active_session(&state).await?;
     Ok(())
 }
@@ -438,7 +620,8 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_matches_session, is_current_generation, to_xdg_trigger, PortalEventKind, SHORTCUT_ID,
+        event_matches_session, is_current_generation, to_xdg_trigger, validate_shortcut,
+        PortalEventKind, ShortcutLifecycleState, SHORTCUT_ID,
     };
 
     #[test]
@@ -495,5 +678,34 @@ mod tests {
     fn ignores_events_from_stale_generations() {
         assert!(is_current_generation(7, 7));
         assert!(!is_current_generation(8, 7));
+    }
+
+    #[test]
+    fn accepts_one_or_two_known_modifiers_and_one_main_key() {
+        assert!(validate_shortcut("Ctrl+Space").is_ok());
+        assert!(validate_shortcut("CommandOrControl+Shift+Space").is_ok());
+    }
+
+    #[test]
+    fn rejects_missing_or_extra_main_keys() {
+        assert!(validate_shortcut("Ctrl").is_err());
+        assert!(validate_shortcut("Ctrl+Space+Enter").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_or_too_many_modifiers() {
+        assert!(validate_shortcut("UnknownModifier+Space").is_err());
+        assert!(validate_shortcut("Ctrl+Alt+Shift+Space").is_err());
+    }
+
+    #[test]
+    fn request_generation_is_monotonic_and_latest_wins() {
+        let mut lifecycle = ShortcutLifecycleState::default();
+        let first = lifecycle.register_request();
+        let second = lifecycle.register_request();
+
+        assert!(second > first);
+        assert!(!lifecycle.is_current(first));
+        assert!(lifecycle.is_current(second));
     }
 }
