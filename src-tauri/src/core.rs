@@ -949,15 +949,14 @@ where
         PlatformSession::Wayland => {
             let wl_copy = command_exists("wl-copy");
             let wl_paste = command_exists("wl-paste");
-            let wtype = command_exists("wtype");
             let ydotool = command_exists("ydotool");
             let wl_clipboard = wl_copy && wl_paste;
             let mut missing = Vec::new();
             if !wl_clipboard {
                 missing.push("wl-clipboard");
             }
-            if !wtype && !ydotool {
-                missing.push("wtype o ydotool");
+            if !ydotool {
+                missing.push("ydotool");
             }
             let hint = distro_install_hint(&missing);
             dependencies.push(DependencyCheck {
@@ -967,26 +966,20 @@ where
                 install_hint: (!wl_clipboard).then(|| distro_install_hint(&["wl-clipboard"]).unwrap_or_default()),
             });
             dependencies.push(DependencyCheck {
-                name: "wtype".into(),
-                available: wtype,
-                required: false,
-                install_hint: (!wtype && !ydotool).then(|| distro_install_hint(&["wtype"]).unwrap_or_default()),
-            });
-            dependencies.push(DependencyCheck {
                 name: "ydotool".into(),
                 available: ydotool,
                 required: false,
-                install_hint: (!wtype && !ydotool).then(|| distro_install_hint(&["ydotool"]).unwrap_or_default()),
+                install_hint: (!ydotool).then(|| distro_install_hint(&["ydotool"]).unwrap_or_default()),
             });
-            let method = if wl_clipboard && wtype {
-                "wl-clipboard+wtype"
-            } else if wl_clipboard && ydotool {
+            let method = if wl_clipboard && ydotool {
                 "wl-clipboard+ydotool"
+            } else if wl_clipboard {
+                "wl-clipboard"
             } else {
                 "unavailable"
             };
             let _ = hint;
-            (wl_clipboard, wl_clipboard && (wtype || ydotool), method.into())
+            (wl_clipboard, wl_clipboard && ydotool, method.into())
         }
         PlatformSession::Unknown => (false, false, "unavailable".into()),
     };
@@ -1265,6 +1258,24 @@ mod tests {
         assert!(!diagnosis.clipboard_available);
         assert!(!diagnosis.paste_available);
         assert!(!diagnosis.hold_mode_supported);
+    }
+
+    #[test]
+    fn wayland_keeps_clipboard_when_ydotool_is_missing() {
+        let diagnosis = diagnose_platform_with(
+            PlatformEnvironment {
+                os: "linux",
+                session_type: Some("wayland"),
+                current_desktop: Some("Unity"),
+                wayland_display: Some("wayland-0"),
+                x_display: None,
+            },
+            |command| matches!(command, "wl-copy" | "wl-paste"),
+        );
+
+        assert!(diagnosis.clipboard_available);
+        assert!(!diagnosis.paste_available);
+        assert_eq!(diagnosis.paste_method, "wl-clipboard");
     }
 
     #[test]
