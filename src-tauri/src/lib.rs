@@ -4,9 +4,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -43,6 +43,7 @@ struct RuntimeState {
     wayland_shortcut_operation: tauri::async_runtime::Mutex<()>,
     wayland_shortcut_lifecycle: Mutex<wayland_shortcut::ShortcutLifecycleState>,
     wayland_shortcut_cleanup: Arc<Mutex<wayland_shortcut::ShortcutCleanupState>>,
+    whisper_context: Arc<(Mutex<CachedWhisperContext>, Condvar)>,
 }
 
 static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -167,7 +168,37 @@ impl Default for RuntimeState {
             wayland_shortcut_cleanup: Arc::new(Mutex::new(
                 wayland_shortcut::ShortcutCleanupState::default(),
             )),
+            whisper_context: Arc::new((
+                Mutex::new(CachedWhisperContext::default()),
+                Condvar::new(),
+            )),
         }
+    }
+}
+
+#[derive(Default)]
+struct CachedWhisperContext {
+    context: Option<Arc<WhisperContext>>,
+    loading: bool,
+    #[cfg(test)]
+    test_ready: bool,
+}
+
+#[cfg(test)]
+impl CachedWhisperContext {
+    fn is_ready(&self) -> bool {
+        self.context.is_some() || self.test_ready
+    }
+
+    fn mark_ready_for_test(&mut self) {
+        self.loading = false;
+        self.test_ready = true;
+    }
+
+    fn mark_failed_for_test(&mut self) {
+        self.context = None;
+        self.loading = false;
+        self.test_ready = false;
     }
 }
 
@@ -400,11 +431,73 @@ fn send_to_clipboard(text: &str) -> Result<(), String> {
     }
 }
 
-/// Runs whisper.cpp in-process. The model is a verified local file and the
-/// captured PCM is converted only to an ephemeral f32 buffer required by the
-/// engine; neither representation is written to disk or sent over the network.
-fn transcribe_with_embedded_whisper(
+fn load_validated_whisper_context(
     model_path: &Path,
+    expected_sha256: &str,
+) -> Result<Arc<WhisperContext>, String> {
+    let validation_started = Instant::now();
+    let validation = validate_model_checksum(model_path, expected_sha256);
+    eprintln!(
+        "Whisper checksum validation took {} ms",
+        validation_started.elapsed().as_millis()
+    );
+    let validation = validation?;
+    if !validation.is_valid {
+        return Err("El checksum SHA-256 del modelo no coincide; descárgalo otra vez.".into());
+    }
+
+    let context_started = Instant::now();
+    let context = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+        .map_err(|error| format!("No se pudo cargar el modelo local: {error}"))?;
+    eprintln!(
+        "Whisper context load took {} ms",
+        context_started.elapsed().as_millis()
+    );
+    Ok(Arc::new(context))
+}
+
+fn load_or_reuse_whisper_context(
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_path: &Path,
+    expected_sha256: &str,
+) -> Result<Arc<WhisperContext>, String> {
+    loop {
+        let (cache_lock, cache_ready) = &**cache;
+        let mut cached = cache_lock
+            .lock()
+            .map_err(|_| "No se pudo acceder a la caché del modelo".to_string())?;
+        if let Some(context) = cached.context.as_ref() {
+            return Ok(Arc::clone(context));
+        }
+        if cached.loading {
+            cached = cache_ready
+                .wait(cached)
+                .map_err(|_| "No se pudo esperar la carga del modelo".to_string())?;
+            drop(cached);
+            continue;
+        }
+        cached.loading = true;
+        drop(cached);
+
+        let result = load_validated_whisper_context(model_path, expected_sha256);
+        let mut cached = cache_lock
+            .lock()
+            .map_err(|_| "No se pudo actualizar la caché del modelo".to_string())?;
+        cached.loading = false;
+        if let Ok(context) = &result {
+            cached.context = Some(Arc::clone(context));
+        }
+        cache_ready.notify_all();
+        return result;
+    }
+}
+
+/// Runs whisper.cpp in-process. The context is a verified local model shared
+/// by dictations, while each call creates a fresh state. The captured PCM is
+/// converted only to an ephemeral f32 buffer required by the engine; neither
+/// representation is written to disk or sent over the network.
+fn transcribe_with_embedded_whisper(
+    context: &WhisperContext,
     language: &str,
     samples: &mut [i16],
 ) -> Result<String, String> {
@@ -412,12 +505,8 @@ fn transcribe_with_embedded_whisper(
         .iter()
         .map(|sample| f32::from(*sample) / f32::from(i16::MAX))
         .collect();
+    let inference_started = Instant::now();
     let result = (|| {
-        let model_path = model_path
-            .to_str()
-            .ok_or_else(|| "La ruta del modelo contiene caracteres no compatibles".to_string())?;
-        let context = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
-            .map_err(|error| format!("No se pudo cargar el modelo local: {error}"))?;
         let mut state = context
             .create_state()
             .map_err(|error| format!("No se pudo preparar whisper.cpp: {error}"))?;
@@ -437,6 +526,10 @@ fn transcribe_with_embedded_whisper(
         }
         Ok(text.trim().to_owned())
     })();
+    eprintln!(
+        "Whisper inference took {} ms",
+        inference_started.elapsed().as_millis()
+    );
     audio.fill(0.0);
     samples.fill(0);
     result
@@ -454,20 +547,15 @@ impl Drop for TranscriptionWork {
     }
 }
 
-fn transcribe_work(mut work: TranscriptionWork, expected_sha256: &str) -> Result<String, String> {
+fn transcribe_work(
+    mut work: TranscriptionWork,
+    context: Arc<WhisperContext>,
+) -> Result<String, String> {
     let result = (|| {
         if work.samples.is_empty() {
             return Err("No se capturó audio; revisa el permiso del micrófono".into());
         }
-        let validation = validate_model_checksum(&work.model_path, expected_sha256)?;
-        if !validation.is_valid {
-            return Err("El checksum SHA-256 del modelo no coincide; descárgalo otra vez.".into());
-        }
-        let text = transcribe_with_embedded_whisper(
-            &work.model_path,
-            &work.language,
-            &mut work.samples,
-        )?;
+        let text = transcribe_with_embedded_whisper(&context, &work.language, &mut work.samples)?;
         if text.is_empty() {
             return Err("whisper.cpp no devolvió texto".into());
         }
@@ -588,14 +676,23 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
         }
 
         let expected_sha256 = model.sha256.clone();
+        let whisper_context = Arc::clone(&state.whisper_context);
         let text = tauri::async_runtime::spawn_blocking(move || {
             let samples = capture.stop()?;
+            if samples.is_empty() {
+                return Err("No se capturó audio; revisa el permiso del micrófono".into());
+            }
             let work = TranscriptionWork {
                 model_path,
                 language,
                 samples,
             };
-            transcribe_work(work, &expected_sha256)
+            let context = load_or_reuse_whisper_context(
+                &whisper_context,
+                &work.model_path,
+                &expected_sha256,
+            )?;
+            transcribe_work(work, context)
         })
         .await
         .map_err(|_| "La transcripción terminó inesperadamente".to_string())??;
@@ -1392,5 +1489,22 @@ mod tests {
         assert_eq!(work.model_path, PathBuf::from("/tmp/ggml-base.bin"));
         assert_eq!(work.language, "es");
         assert_eq!(work.samples, vec![1, -2, 3]);
+    }
+
+    #[test]
+    fn cached_context_is_reused_after_a_successful_load() {
+        let mut cache = CachedWhisperContext::default();
+        cache.mark_ready_for_test();
+
+        assert!(cache.is_ready());
+    }
+
+    #[test]
+    fn failed_context_load_leaves_no_ready_context() {
+        let mut cache = CachedWhisperContext::default();
+        cache.mark_failed_for_test();
+
+        assert!(!cache.is_ready());
+        assert!(cache.context.is_none());
     }
 }
