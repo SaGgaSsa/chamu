@@ -15,6 +15,7 @@ function renderTester(overrides: Partial<{
   microphoneName?: string;
   resultText?: string;
   resultId?: string | number;
+  resultPasted?: boolean;
   shortcutRegistrationError?: string | null;
   waylandShortcutStatus?: WaylandHoldShortcutEvent;
 } > = {}) {
@@ -112,6 +113,54 @@ describe("DictationTester", () => {
     rerender(<DictationTester {...props} ref={testerRef} resultText="Nuevo" resultId="result-1" />);
     expect(textarea).toHaveValue("Texto base");
     expect(screen.getByText(/portapapeles/i)).toBeVisible();
+  });
+
+  it("does not reuse a previous selection when dictation starts unfocused", () => {
+    const testerRef = createRef<DictationTesterHandle>();
+    const { rerender, props } = renderTester();
+    const textarea = screen.getByRole("textbox", { name: /texto de prueba/i }) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "Texto base" } });
+    fireEvent.focus(textarea);
+    textarea.setSelectionRange(0, 5);
+
+    rerender(<DictationTester {...props} ref={testerRef} />);
+    fireEvent.blur(textarea);
+    testerRef.current?.prepareForDictation();
+
+    rerender(<DictationTester {...props} ref={testerRef} resultText="Nuevo" resultId="result-1" />);
+
+    expect(textarea).toHaveValue("Texto base");
+    expect(screen.getByText(/portapapeles/i)).toBeVisible();
+  });
+
+  it("does not focus the textarea after inserting a local dictation", () => {
+    const testerRef = createRef<DictationTesterHandle>();
+    const { rerender, props } = renderTester();
+    const textarea = screen.getByRole("textbox", { name: /texto de prueba/i }) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    textarea.setSelectionRange(0, 0);
+    rerender(<DictationTester {...props} ref={testerRef} />);
+    testerRef.current?.prepareForDictation();
+    const focus = vi.spyOn(textarea, "focus");
+
+    rerender(<DictationTester {...props} ref={testerRef} resultText="Nuevo" resultId="result-1" />);
+
+    expect(textarea).toHaveValue("Nuevo");
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it("does not insert a result that the native portal already pasted", () => {
+    const testerRef = createRef<DictationTesterHandle>();
+    const { rerender, props } = renderTester();
+    const textarea = screen.getByRole("textbox", { name: /texto de prueba/i }) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    textarea.setSelectionRange(0, 0);
+    rerender(<DictationTester {...props} ref={testerRef} />);
+    testerRef.current?.prepareForDictation();
+
+    rerender(<DictationTester {...props} ref={testerRef} resultText="Nuevo" resultId="result-1" resultPasted />);
+
+    expect(textarea).toHaveValue("");
   });
 
   it("clears a captured selection when a result is empty", () => {

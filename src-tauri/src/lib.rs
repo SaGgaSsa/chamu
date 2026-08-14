@@ -20,6 +20,7 @@ mod core;
 mod dictation;
 mod audio_adapter;
 mod audio_capture;
+mod wayland_paste;
 mod wayland_shortcut;
 
 use core::{
@@ -43,6 +44,7 @@ struct RuntimeState {
     wayland_shortcut_operation: tauri::async_runtime::Mutex<()>,
     wayland_shortcut_lifecycle: Mutex<wayland_shortcut::ShortcutLifecycleState>,
     wayland_shortcut_cleanup: Arc<Mutex<wayland_shortcut::ShortcutCleanupState>>,
+    wayland_paste: Arc<tokio::sync::OnceCell<Arc<wayland_paste::WaylandPasteSession>>>,
     whisper_context: Arc<(Mutex<CachedWhisperContext>, Condvar)>,
 }
 
@@ -151,6 +153,8 @@ struct DictationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     history_entry: Option<BridgeHistoryEntry>,
     message: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pasted: bool,
 }
 
 impl Default for RuntimeState {
@@ -168,6 +172,7 @@ impl Default for RuntimeState {
             wayland_shortcut_cleanup: Arc::new(Mutex::new(
                 wayland_shortcut::ShortcutCleanupState::default(),
             )),
+            wayland_paste: Arc::new(tokio::sync::OnceCell::new()),
             whisper_context: Arc::new((
                 Mutex::new(CachedWhisperContext::default()),
                 Condvar::new(),
@@ -492,6 +497,23 @@ fn load_or_reuse_whisper_context(
     }
 }
 
+/// Loads the installed model outside the UI thread. A missing model is normal
+/// during onboarding, so it does not prevent the application from starting.
+fn warm_whisper_context(
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+) -> Result<(), String> {
+    let model = model_catalog()
+        .into_iter()
+        .find(|model| model.id == "base")
+        .ok_or_else(|| "No se encontró el modelo base".to_string())?;
+    let model_path = model_install_path(&model)?;
+    if !model_path.is_file() {
+        return Ok(());
+    }
+
+    load_or_reuse_whisper_context(cache, &model_path, &model.sha256).map(|_| ())
+}
+
 /// Runs whisper.cpp in-process. The context is a verified local model shared
 /// by dictations, while each call creates a fresh state. The captured PCM is
 /// converted only to an ephemeral f32 buffer required by the engine; neither
@@ -630,6 +652,7 @@ fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, St
         text: None,
         history_entry: None,
         message: None,
+        pasted: false,
     })
 }
 
@@ -698,23 +721,65 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
         .map_err(|_| "La transcripción terminó inesperadamente".to_string())??;
 
         let timestamp = now_unix_millis();
-        let mut history = state
-            .history
-            .lock()
-            .map_err(|_| "No se pudo abrir el historial".to_string())?;
-        if history.is_none() {
-            *history = Some(HistoryStore::open(history_path()?)?);
-        }
-        let history_id = history
-            .as_mut()
-            .expect("history initialized")
-            .insert(text.clone(), timestamp)?;
-        let history_entry = history_entry_for_bridge(HistoryEntry {
-            id: history_id,
-            text: text.clone(),
-            timestamp,
-        });
+        let history_entry = {
+            let mut history = state
+                .history
+                .lock()
+                .map_err(|_| "No se pudo abrir el historial".to_string())?;
+            if history.is_none() {
+                *history = Some(HistoryStore::open(history_path()?)?);
+            }
+            let history_id = history
+                .as_mut()
+                .expect("history initialized")
+                .insert(text.clone(), timestamp)?;
+            history_entry_for_bridge(HistoryEntry {
+                id: history_id,
+                text: text.clone(),
+                timestamp,
+            })
+        };
+        let clipboard_started = Instant::now();
         send_to_clipboard(&text)?;
+        eprintln!(
+            "Dictation clipboard update took {} ms",
+            clipboard_started.elapsed().as_millis()
+        );
+        let mut message = "Texto copiado al portapapeles local".to_string();
+        let mut pasted = false;
+        if detect_platform().session == PlatformSession::Wayland {
+            let paste_started = Instant::now();
+            let session = Arc::clone(&state.wayland_paste);
+            match session
+                .get_or_try_init(|| async {
+                    wayland_paste::WaylandPasteSession::connect()
+                        .await
+                        .map(Arc::new)
+                })
+                .await
+            {
+                Ok(session) => match session.paste().await {
+                    Ok(()) => {
+                        eprintln!(
+                            "Dictation Wayland paste took {} ms",
+                            paste_started.elapsed().as_millis()
+                        );
+                        message = "Texto pegado en la ventana activa".into();
+                        pasted = true;
+                    }
+                    Err(error) => {
+                        message = format!(
+                            "Texto copiado al portapapeles local. Pégalo manualmente: {error}"
+                        );
+                    }
+                },
+                Err(error) => {
+                    message = format!(
+                        "Texto copiado al portapapeles local. Pégalo manualmente: {error}"
+                    );
+                }
+            }
+        }
         state
             .recording
             .lock()
@@ -724,7 +789,8 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
             status: "copied".into(),
             text: Some(text),
             history_entry: Some(history_entry),
-            message: Some("Texto copiado al portapapeles local".into()),
+            message: Some(message),
+            pasted,
         })
     }
     .await;
@@ -1380,6 +1446,12 @@ pub fn run() {
         })
         .setup(|app| {
             setup_tray(app)?;
+            let whisper_context = Arc::clone(&app.state::<RuntimeState>().whisper_context);
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = warm_whisper_context(&whisper_context) {
+                    eprintln!("Whisper context warmup skipped: {error}");
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -1439,6 +1511,7 @@ mod tests {
                 timestamp: 1_700_000_000_000,
             })),
             message: Some("Texto copiado al portapapeles local".into()),
+            pasted: false,
         };
 
         assert_eq!(result.status, "copied");

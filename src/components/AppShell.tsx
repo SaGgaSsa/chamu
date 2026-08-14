@@ -45,6 +45,7 @@ export function AppShell({
   const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   const [dictationResult, setDictationResult] = useState<{
     text?: DictationResult["text"];
+    pasted?: boolean;
     id: string | number;
   }>();
   const [shortcutRegistrationError, setShortcutRegistrationError] = useState<string | null>(null);
@@ -532,7 +533,7 @@ export function AppShell({
       case "copied":
         updateRecordingState({ status: "copied" });
         const resultId = result.historyEntry?.id ?? ++dictationResultCounterRef.current;
-        setDictationResult({ text: result.text, id: resultId });
+        setDictationResult({ text: result.text, pasted: result.pasted, id: resultId });
         return;
       case "error":
         updateRecordingState({
@@ -583,6 +584,7 @@ export function AppShell({
           onShortcutCaptured={handleShortcutCaptured}
           resultText={dictationResult?.text}
           resultId={dictationResult?.id}
+          resultPasted={dictationResult?.pasted}
           shortcutRegistrationError={shortcutRegistrationError}
           waylandShortcutStatus={waylandShortcutStatus}
           onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}

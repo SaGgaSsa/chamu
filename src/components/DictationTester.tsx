@@ -17,6 +17,7 @@ export interface DictationTesterProps {
   onCapturingChange?: (capturing: boolean) => void;
   resultText?: DictationResult["text"];
   resultId?: string | number;
+  resultPasted?: boolean;
   shortcutRegistrationError?: string | null;
   onShortcutRegistrationError?: (message?: string) => void;
   waylandShortcutStatus?: WaylandHoldShortcutEvent;
@@ -38,6 +39,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
   onCapturingChange,
   resultText,
   resultId,
+  resultPasted = false,
   shortcutRegistrationError,
   onShortcutRegistrationError,
   waylandShortcutStatus,
@@ -58,6 +60,11 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
     if (resultId !== undefined && consumedResultRef.current === resultId) return;
 
     if (resultId !== undefined) consumedResultRef.current = resultId;
+    if (resultPasted) {
+      dictationInputRef.current = null;
+      setCopiedOnlyMessage(undefined);
+      return;
+    }
     const textArea = textAreaRef.current;
     const selection = dictationInputRef.current;
     if (textArea && selection) {
@@ -67,17 +74,12 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
       const nextText = `${before}${resultText}${after}`;
       setText(nextText);
       setCopiedOnlyMessage(undefined);
-      const cursor = selection.start + resultText.length;
-      requestAnimationFrame(() => {
-        textArea.focus();
-        textArea.setSelectionRange(cursor, cursor);
-      });
       dictationInputRef.current = null;
       return;
     }
 
     setCopiedOnlyMessage("Texto dictado copiado al portapapeles. Haz foco en el área para escribir una prueba.");
-  }, [resultId, resultText]);
+  }, [resultId, resultPasted, resultText]);
 
   function updateMode(mode: AppSettings["mode"]) {
     onSettingsChange({ ...settings, mode });

@@ -63,6 +63,7 @@ export function OnboardingFlow({
   const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   const [dictationResult, setDictationResult] = useState<{
     text?: DictationResult["text"];
+    pasted?: boolean;
     id: string | number;
   }>();
   const unlistenRef = useRef<ProgressListener | null>(null);
@@ -306,6 +307,7 @@ export function OnboardingFlow({
         setDictationState({ status: "copied" });
         setDictationResult({
           text: result.text,
+          pasted: result.pasted,
           id: result.historyEntry?.id ?? ++dictationResultCounterRef.current,
         });
         return;
@@ -388,6 +390,7 @@ export function OnboardingFlow({
                 onDictationClick={() => void handleDictation()}
                 resultText={dictationResult?.text}
                 resultId={dictationResult?.id}
+                resultPasted={dictationResult?.pasted}
                 onCapturingChange={setShortcutCaptureActive}
               />
               {saveError && <p className="error-message">{saveError}</p>}

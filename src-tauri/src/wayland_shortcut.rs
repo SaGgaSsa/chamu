@@ -856,7 +856,7 @@ fn is_missing_host_registry(error: &ashpd::Error) -> bool {
     }
 }
 
-async fn register_host_for_global_shortcuts() -> Result<GlobalShortcuts, String> {
+pub(crate) async fn registered_portal_connection() -> Result<ashpd::zbus::Connection, String> {
     ensure_host_desktop_entry()?;
     let connection = ashpd::zbus::Connection::session()
         .await
@@ -868,6 +868,11 @@ async fn register_host_for_global_shortcuts() -> Result<GlobalShortcuts, String>
         Err(error) if is_missing_host_registry(&error) => {}
         Err(error) => return Err(host_registration_error(&error.to_string())),
     }
+    Ok(connection)
+}
+
+async fn register_host_for_global_shortcuts() -> Result<GlobalShortcuts, String> {
+    let connection = registered_portal_connection().await?;
     GlobalShortcuts::with_connection(connection)
         .await
         .map_err(|error| format!("No se encontró el portal de atajos globales: {error}"))

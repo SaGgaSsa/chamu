@@ -111,6 +111,7 @@ export interface DictationResult {
   text?: string;
   historyEntry?: HistoryEntry;
   message?: string;
+  pasted?: boolean;
 }
 
 /**
