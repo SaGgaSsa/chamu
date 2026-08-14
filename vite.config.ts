@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { configDefaults } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
@@ -10,11 +11,15 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     strictPort: true,
+    watch: {
+      ignored: ["**/.worktrees/**"],
+    },
   },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: true,
     globals: true,
+    exclude: [...configDefaults.exclude, "**/.worktrees/**"],
   },
 });
