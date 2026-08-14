@@ -44,7 +44,6 @@ struct RuntimeState {
     wayland_shortcut_operation: tauri::async_runtime::Mutex<()>,
     wayland_shortcut_lifecycle: Mutex<wayland_shortcut::ShortcutLifecycleState>,
     wayland_shortcut_cleanup: Arc<Mutex<wayland_shortcut::ShortcutCleanupState>>,
-    wayland_paste: Arc<tokio::sync::OnceCell<Arc<wayland_paste::WaylandPasteSession>>>,
     whisper_context: Arc<(Mutex<CachedWhisperContext>, Condvar)>,
 }
 
@@ -172,7 +171,6 @@ impl Default for RuntimeState {
             wayland_shortcut_cleanup: Arc::new(Mutex::new(
                 wayland_shortcut::ShortcutCleanupState::default(),
             )),
-            wayland_paste: Arc::new(tokio::sync::OnceCell::new()),
             whisper_context: Arc::new((
                 Mutex::new(CachedWhisperContext::default()),
                 Condvar::new(),
@@ -749,30 +747,15 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
         let mut pasted = false;
         if detect_platform().session == PlatformSession::Wayland {
             let paste_started = Instant::now();
-            let session = Arc::clone(&state.wayland_paste);
-            match session
-                .get_or_try_init(|| async {
-                    wayland_paste::WaylandPasteSession::connect()
-                        .await
-                        .map(Arc::new)
-                })
-                .await
-            {
-                Ok(session) => match session.paste().await {
-                    Ok(()) => {
-                        eprintln!(
-                            "Dictation Wayland paste took {} ms",
-                            paste_started.elapsed().as_millis()
-                        );
-                        message = "Texto pegado en la ventana activa".into();
-                        pasted = true;
-                    }
-                    Err(error) => {
-                        message = format!(
-                            "Texto copiado al portapapeles local. Pégalo manualmente: {error}"
-                        );
-                    }
-                },
+            match wayland_paste::paste_with_ydotool() {
+                Ok(()) => {
+                    eprintln!(
+                        "Dictation Wayland paste took {} ms",
+                        paste_started.elapsed().as_millis()
+                    );
+                    message = "Texto pegado en la ventana activa".into();
+                    pasted = true;
+                }
                 Err(error) => {
                     message = format!(
                         "Texto copiado al portapapeles local. Pégalo manualmente: {error}"
