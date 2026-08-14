@@ -442,6 +442,43 @@ fn transcribe_with_embedded_whisper(
     result
 }
 
+struct TranscriptionWork {
+    model_path: PathBuf,
+    language: String,
+    samples: Vec<i16>,
+}
+
+impl Drop for TranscriptionWork {
+    fn drop(&mut self) {
+        self.samples.fill(0);
+    }
+}
+
+fn transcribe_work(mut work: TranscriptionWork, expected_sha256: &str) -> Result<String, String> {
+    let result = (|| {
+        if work.samples.is_empty() {
+            return Err("No se capturó audio; revisa el permiso del micrófono".into());
+        }
+        let validation = validate_model_checksum(&work.model_path, expected_sha256)?;
+        if !validation.is_valid {
+            return Err("El checksum SHA-256 del modelo no coincide; descárgalo otra vez.".into());
+        }
+        let text = transcribe_with_embedded_whisper(
+            &work.model_path,
+            &work.language,
+            &mut work.samples,
+        )?;
+        if text.is_empty() {
+            return Err("whisper.cpp no devolvió texto".into());
+        }
+        Ok(text)
+    })();
+    if result.is_err() {
+        work.samples.fill(0);
+    }
+    result
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, RuntimeState>) -> Result<AppSettings, String> {
     let path = settings_path()?;
@@ -515,25 +552,22 @@ fn recover_dictation_after_error(state: &RuntimeState) {
 }
 
 #[tauri::command]
-fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
+async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
     let mut capture_extracted = false;
-    let result = (|| -> Result<DictationResult, String> {
-        let capture = state.capture.lock().map_err(|_| "No se pudo detener el micrófono".to_string())?.take()
+    let result = async {
+        let capture = state
+            .capture
+            .lock()
+            .map_err(|_| "No se pudo detener el micrófono".to_string())?
+            .take()
             .ok_or_else(|| "No hay un dictado en curso".to_string())?;
         capture_extracted = true;
-        let mut samples = capture.stop()?;
-        state.recording.lock().map_err(|_| "No se pudo actualizar el estado".to_string())?.stop_without_audio()?;
-        if samples.is_empty() {
-            return Err("No se capturó audio; revisa el permiso del micrófono".into());
-        }
-        let model = model_catalog().into_iter().find(|model| model.id == "base")
+
+        let model = model_catalog()
+            .into_iter()
+            .find(|model| model.id == "base")
             .ok_or_else(|| "No se encontró el modelo base".to_string())?;
         let model_path = model_install_path(&model)?;
-        let validation = validate_model_checksum(&model_path, &model.sha256)?;
-        if !validation.is_valid {
-            samples.fill(0);
-            return Err("El checksum SHA-256 del modelo no coincide; descárgalo otra vez.".into());
-        }
         let language = match state
             .settings
             .lock()
@@ -543,12 +577,37 @@ fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, Str
         {
             "en" => "en",
             _ => "es",
-        };
-        let text = transcribe_with_embedded_whisper(&model_path, language, &mut samples)?;
-        if text.is_empty() { return Err("whisper.cpp no devolvió texto".into()); }
+        }
+        .to_string();
+        {
+            state
+                .recording
+                .lock()
+                .map_err(|_| "No se pudo actualizar el estado".to_string())?
+                .stop_without_audio()?;
+        }
+
+        let expected_sha256 = model.sha256.clone();
+        let text = tauri::async_runtime::spawn_blocking(move || {
+            let samples = capture.stop()?;
+            let work = TranscriptionWork {
+                model_path,
+                language,
+                samples,
+            };
+            transcribe_work(work, &expected_sha256)
+        })
+        .await
+        .map_err(|_| "La transcripción terminó inesperadamente".to_string())??;
+
         let timestamp = now_unix_millis();
-        let mut history = state.history.lock().map_err(|_| "No se pudo abrir el historial".to_string())?;
-        if history.is_none() { *history = Some(HistoryStore::open(history_path()?)?); }
+        let mut history = state
+            .history
+            .lock()
+            .map_err(|_| "No se pudo abrir el historial".to_string())?;
+        if history.is_none() {
+            *history = Some(HistoryStore::open(history_path()?)?);
+        }
         let history_id = history
             .as_mut()
             .expect("history initialized")
@@ -559,14 +618,19 @@ fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, Str
             timestamp,
         });
         send_to_clipboard(&text)?;
-        state.recording.lock().map_err(|_| "No se pudo actualizar el estado".to_string())?.mark_copied();
+        state
+            .recording
+            .lock()
+            .map_err(|_| "No se pudo actualizar el estado".to_string())?
+            .mark_copied();
         Ok(DictationResult {
             status: "copied".into(),
             text: Some(text),
             history_entry: Some(history_entry),
             message: Some("Texto copiado al portapapeles local".into()),
         })
-    })();
+    }
+    .await;
     if capture_extracted && result.is_err() {
         recover_dictation_after_error(&state);
     }
@@ -1315,5 +1379,18 @@ mod tests {
             .start()
             .expect("a failed dictation must allow retry");
         assert_eq!(recording.phase(), RecordingPhase::Recording);
+    }
+
+    #[test]
+    fn transcription_work_owns_model_language_and_audio() {
+        let work = TranscriptionWork {
+            model_path: PathBuf::from("/tmp/ggml-base.bin"),
+            language: "es".to_string(),
+            samples: vec![1, -2, 3],
+        };
+
+        assert_eq!(work.model_path, PathBuf::from("/tmp/ggml-base.bin"));
+        assert_eq!(work.language, "es");
+        assert_eq!(work.samples, vec![1, -2, 3]);
     }
 }
