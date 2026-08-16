@@ -286,27 +286,51 @@ pub enum WhisperConfigError {
 impl fmt::Display for WhisperConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ModelNotFound(path) => write!(formatter, "no se encontró el modelo: {}", path.display()),
-            Self::ModelNotFile(path) => write!(formatter, "el modelo no es un archivo: {}", path.display()),
+            Self::ModelNotFound(path) => {
+                write!(formatter, "no se encontró el modelo: {}", path.display())
+            }
+            Self::ModelNotFile(path) => {
+                write!(formatter, "el modelo no es un archivo: {}", path.display())
+            }
             Self::ModelChecksumNotValidated(path) => write!(
                 formatter,
                 "el modelo no fue validado con SHA-256: {}",
                 path.display()
             ),
             Self::ModelCanonicalize { path, error } => {
-                write!(formatter, "no se pudo validar el modelo {}: {error}", path.display())
+                write!(
+                    formatter,
+                    "no se pudo validar el modelo {}: {error}",
+                    path.display()
+                )
             }
             Self::ExecutableNotFound(path) => {
-                write!(formatter, "no se encontró el ejecutable local: {}", path.display())
+                write!(
+                    formatter,
+                    "no se encontró el ejecutable local: {}",
+                    path.display()
+                )
             }
             Self::ExecutableNotFile(path) => {
-                write!(formatter, "el ejecutable no es un archivo: {}", path.display())
+                write!(
+                    formatter,
+                    "el ejecutable no es un archivo: {}",
+                    path.display()
+                )
             }
             Self::ExecutableNotExecutable(path) => {
-                write!(formatter, "el archivo no se puede ejecutar: {}", path.display())
+                write!(
+                    formatter,
+                    "el archivo no se puede ejecutar: {}",
+                    path.display()
+                )
             }
             Self::ExecutableCanonicalize { path, error } => {
-                write!(formatter, "no se pudo validar el ejecutable {}: {error}", path.display())
+                write!(
+                    formatter,
+                    "no se pudo validar el ejecutable {}: {error}",
+                    path.display()
+                )
             }
         }
     }
@@ -330,10 +354,11 @@ impl ValidatedModelPath {
         if !path.is_file() {
             return Err(WhisperConfigError::ModelNotFile(path));
         }
-        let canonical = fs::canonicalize(&path).map_err(|error| WhisperConfigError::ModelCanonicalize {
-            path: path.clone(),
-            error: error.to_string(),
-        })?;
+        let canonical =
+            fs::canonicalize(&path).map_err(|error| WhisperConfigError::ModelCanonicalize {
+                path: path.clone(),
+                error: error.to_string(),
+            })?;
         Ok(Self { path: canonical })
     }
 
@@ -371,11 +396,7 @@ impl WhisperTranscriberConfig {
         model_path: impl AsRef<Path>,
         language: Language,
     ) -> Result<Self, WhisperConfigError> {
-        Self::from_validated_model(
-            executable,
-            ValidatedModelPath::new(model_path)?,
-            language,
-        )
+        Self::from_validated_model(executable, ValidatedModelPath::new(model_path)?, language)
     }
 
     pub fn from_validated_model(
@@ -472,7 +493,9 @@ fn canonical_executable(path: &Path) -> Result<PathBuf, WhisperConfigError> {
             .permissions()
             .mode();
         if mode & 0o111 == 0 {
-            return Err(WhisperConfigError::ExecutableNotExecutable(path.to_path_buf()));
+            return Err(WhisperConfigError::ExecutableNotExecutable(
+                path.to_path_buf(),
+            ));
         }
     }
     fs::canonicalize(path).map_err(|error| WhisperConfigError::ExecutableCanonicalize {
@@ -530,12 +553,22 @@ impl fmt::Display for TranscriptionError {
             Self::Audio(error) => write!(formatter, "no se pudo preparar el audio: {error}"),
             Self::StdinUnavailable => write!(formatter, "whisper.cpp no abrió stdin para el audio"),
             Self::Spawn { executable, error } => {
-                write!(formatter, "no se pudo iniciar {}: {error}", executable.display())
+                write!(
+                    formatter,
+                    "no se pudo iniciar {}: {error}",
+                    executable.display()
+                )
             }
-            Self::WriteStdin(error) => write!(formatter, "no se pudo entregar el audio a whisper.cpp: {error}"),
+            Self::WriteStdin(error) => write!(
+                formatter,
+                "no se pudo entregar el audio a whisper.cpp: {error}"
+            ),
             Self::Wait(error) => write!(formatter, "no se pudo esperar a whisper.cpp: {error}"),
             Self::ProcessFailed { code, stderr } => {
-                write!(formatter, "whisper.cpp terminó con código {code:?}: {stderr}")
+                write!(
+                    formatter,
+                    "whisper.cpp terminó con código {code:?}: {stderr}"
+                )
             }
             Self::EmptyOutput => write!(formatter, "whisper.cpp no devolvió texto"),
         }
@@ -592,7 +625,11 @@ impl WhisperTranscriber {
             .stdin
             .as_mut()
             .ok_or(TranscriptionError::StdinUnavailable)
-            .and_then(|stdin| stdin.write_all(&wav).map_err(|error| TranscriptionError::WriteStdin(error.to_string())));
+            .and_then(|stdin| {
+                stdin
+                    .write_all(&wav)
+                    .map_err(|error| TranscriptionError::WriteStdin(error.to_string()))
+            });
         if let Err(error) = write_result {
             let _ = child.kill();
             let _ = child.wait();
@@ -677,33 +714,61 @@ pub enum PasteError {
         operation: String,
         hint: String,
     },
-    ClipboardSpawn { command: String, error: String },
-    ClipboardWrite { command: String, error: String },
-    ClipboardFailed { command: String, code: Option<i32>, stderr: String },
-    InjectorSpawn { command: String, error: String },
-    InjectorFailed { command: String, code: Option<i32>, stderr: String },
+    ClipboardSpawn {
+        command: String,
+        error: String,
+    },
+    ClipboardWrite {
+        command: String,
+        error: String,
+    },
+    ClipboardFailed {
+        command: String,
+        code: Option<i32>,
+        stderr: String,
+    },
+    InjectorSpawn {
+        command: String,
+        error: String,
+    },
+    InjectorFailed {
+        command: String,
+        code: Option<i32>,
+        stderr: String,
+    },
 }
 
 impl fmt::Display for PasteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform(platform) => write!(formatter, "plataforma no soportada: {platform:?}"),
+            Self::UnsupportedPlatform(platform) => {
+                write!(formatter, "plataforma no soportada: {platform:?}")
+            }
             Self::MissingDependency {
                 command,
                 operation,
                 hint,
             } => write!(formatter, "falta {command} para {operation}. {hint}"),
             Self::ClipboardSpawn { command, error } => {
-                write!(formatter, "no se pudo iniciar el portapapeles {command}: {error}")
+                write!(
+                    formatter,
+                    "no se pudo iniciar el portapapeles {command}: {error}"
+                )
             }
             Self::ClipboardWrite { command, error } => {
-                write!(formatter, "no se pudo escribir en el portapapeles {command}: {error}")
+                write!(
+                    formatter,
+                    "no se pudo escribir en el portapapeles {command}: {error}"
+                )
             }
             Self::ClipboardFailed {
                 command,
                 code,
                 stderr,
-            } => write!(formatter, "el portapapeles {command} terminó con código {code:?}: {stderr}"),
+            } => write!(
+                formatter,
+                "el portapapeles {command} terminó con código {code:?}: {stderr}"
+            ),
             Self::InjectorSpawn { command, error } => {
                 write!(formatter, "no se pudo iniciar el pegado {command}: {error}")
             }
@@ -711,7 +776,10 @@ impl fmt::Display for PasteError {
                 command,
                 code,
                 stderr,
-            } => write!(formatter, "el pegado {command} terminó con código {code:?}: {stderr}"),
+            } => write!(
+                formatter,
+                "el pegado {command} terminó con código {code:?}: {stderr}"
+            ),
         }
     }
 }
@@ -735,7 +803,9 @@ pub struct PastePipeline {
 
 impl PastePipeline {
     pub fn detect(platform: PastePlatform) -> Result<Self, PasteError> {
-        Self::detect_with(platform, |command| find_command(OsStr::new(command)).is_some())
+        Self::detect_with(platform, |command| {
+            find_command(OsStr::new(command)).is_some()
+        })
     }
 
     pub fn detect_with<F>(platform: PastePlatform, available: F) -> Result<Self, PasteError>
@@ -881,7 +951,10 @@ impl PastePipeline {
         injector: CommandSpec,
     ) -> Self {
         let (clipboard_kind, injector_kind) = match platform {
-            PastePlatform::Windows => (ClipboardProvider::WindowsClip, PasteInjector::WindowsSendKeys),
+            PastePlatform::Windows => (
+                ClipboardProvider::WindowsClip,
+                PasteInjector::WindowsSendKeys,
+            ),
             PastePlatform::X11 => (ClipboardProvider::Xclip, PasteInjector::Xdotool),
             PastePlatform::Wayland => (ClipboardProvider::WlClipboard, PasteInjector::Wtype),
         };
@@ -986,19 +1059,21 @@ fn run_paste_command(
                     }
                 }
             })
-            .and_then(|stdin| stdin.write_all(input).map_err(|error| {
-                if clipboard {
-                    PasteError::ClipboardWrite {
-                        command: command.clone(),
-                        error: error.to_string(),
+            .and_then(|stdin| {
+                stdin.write_all(input).map_err(|error| {
+                    if clipboard {
+                        PasteError::ClipboardWrite {
+                            command: command.clone(),
+                            error: error.to_string(),
+                        }
+                    } else {
+                        PasteError::InjectorSpawn {
+                            command: command.clone(),
+                            error: error.to_string(),
+                        }
                     }
-                } else {
-                    PasteError::InjectorSpawn {
-                        command: command.clone(),
-                        error: error.to_string(),
-                    }
-                }
-            }));
+                })
+            });
         if let Err(error) = result {
             let _ = child.kill();
             let _ = child.wait();
@@ -1042,7 +1117,11 @@ fn installation_hint(platform: PastePlatform, command: &str) -> String {
     match platform {
         PastePlatform::Windows => format!("Verifica que {command} esté disponible en Windows."),
         PastePlatform::X11 => {
-            let package = if command == "xdotool" { "xdotool" } else { "xclip xdotool" };
+            let package = if command == "xdotool" {
+                "xdotool"
+            } else {
+                "xclip xdotool"
+            };
             distro_install_hint(package)
         }
         PastePlatform::Wayland => {
@@ -1128,7 +1207,9 @@ pub enum ShortcutError {
         platform: ShortcutPlatform,
         compositor: Compositor,
     },
-    ToggleUnavailable { platform: ShortcutPlatform },
+    ToggleUnavailable {
+        platform: ShortcutPlatform,
+    },
     UnsupportedPlatform(ShortcutPlatform),
 }
 
@@ -1265,9 +1346,7 @@ pub fn detect_compositor() -> Compositor {
         .ok()
         .or_else(|| std::env::var("XDG_SESSION_DESKTOP").ok())
         .or_else(|| std::env::var("DESKTOP_SESSION").ok())
-        .or_else(|| {
-            std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").map(|_| "Hyprland".to_owned())
-        });
+        .or_else(|| std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").map(|_| "Hyprland".to_owned()));
     Compositor::from_name(desktop.as_deref().unwrap_or_default())
 }
 
@@ -1290,7 +1369,8 @@ mod tests {
 
     #[test]
     fn capture_lifecycle_keeps_pcm_in_memory_until_finish() {
-        let mut capture = InMemoryAudioCapture::new(AudioFormat::new(16_000, 1).unwrap(), 32).unwrap();
+        let mut capture =
+            InMemoryAudioCapture::new(AudioFormat::new(16_000, 1).unwrap(), 32).unwrap();
         assert_eq!(capture.state(), CaptureState::Idle);
         capture.start().unwrap();
         capture.push_samples(&[1, 2, 3]).unwrap();
@@ -1305,7 +1385,8 @@ mod tests {
 
     #[test]
     fn capture_rejects_samples_outside_active_lifecycle_and_limit() {
-        let mut capture = InMemoryAudioCapture::new(AudioFormat::new(16_000, 1).unwrap(), 2).unwrap();
+        let mut capture =
+            InMemoryAudioCapture::new(AudioFormat::new(16_000, 1).unwrap(), 2).unwrap();
         assert!(matches!(
             capture.push_samples(&[1]),
             Err(CaptureError::NotRecording)
@@ -1316,21 +1397,28 @@ mod tests {
             capture.push_samples(&[3]),
             Err(CaptureError::CapacityExceeded { .. })
         ));
-        assert!(matches!(capture.start(), Err(CaptureError::AlreadyRecording)));
+        assert!(matches!(
+            capture.start(),
+            Err(CaptureError::AlreadyRecording)
+        ));
         capture.cancel().unwrap();
         assert_eq!(capture.sample_count(), 0);
     }
 
     #[test]
     fn audio_buffer_encodes_pcm_as_a_wav_without_writing_a_file() {
-        let mut capture = InMemoryAudioCapture::new(AudioFormat::new(8_000, 1).unwrap(), 4).unwrap();
+        let mut capture =
+            InMemoryAudioCapture::new(AudioFormat::new(8_000, 1).unwrap(), 4).unwrap();
         capture.start().unwrap();
         capture.push_samples(&[0, i16::MAX, i16::MIN]).unwrap();
         let wav = capture.finish().unwrap().to_wav_bytes().unwrap();
         assert_eq!(&wav[..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 6);
-        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()) as usize, wav.len() - 8);
+        assert_eq!(
+            u32::from_le_bytes(wav[4..8].try_into().unwrap()) as usize,
+            wav.len() - 8
+        );
     }
 
     #[test]
@@ -1346,12 +1434,14 @@ mod tests {
         assert!(invocation.args().windows(2).any(|pair| {
             pair[0] == OsStr::new("-m") && pair[1].as_os_str() == model.as_os_str()
         }));
-        assert!(invocation.args().windows(2).any(|pair| {
-            pair[0] == OsStr::new("-l") && pair[1] == OsStr::new("en")
-        }));
-        assert!(invocation.args().windows(2).any(|pair| {
-            pair[0] == OsStr::new("-f") && pair[1] == OsStr::new("-")
-        }));
+        assert!(invocation
+            .args()
+            .windows(2)
+            .any(|pair| { pair[0] == OsStr::new("-l") && pair[1] == OsStr::new("en") }));
+        assert!(invocation
+            .args()
+            .windows(2)
+            .any(|pair| { pair[0] == OsStr::new("-f") && pair[1] == OsStr::new("-") }));
         assert!(invocation
             .args()
             .iter()
@@ -1363,14 +1453,12 @@ mod tests {
     #[cfg(unix)]
     fn whisper_runner_feeds_wav_to_local_process_and_returns_output() {
         let model = temporary_model("runner");
-        let transcriber = WhisperTranscriber::new(WhisperTranscriberConfig::new(
-            "/bin/echo",
-            &model,
-            Language::Spanish,
+        let transcriber = WhisperTranscriber::new(
+            WhisperTranscriberConfig::new("/bin/echo", &model, Language::Spanish).unwrap(),
         )
-        .unwrap())
         .unwrap();
-        let mut capture = InMemoryAudioCapture::new(AudioFormat::new(16_000, 1).unwrap(), 1).unwrap();
+        let mut capture =
+            InMemoryAudioCapture::new(AudioFormat::new(16_000, 1).unwrap(), 1).unwrap();
         capture.start().unwrap();
         capture.push_samples(&[4]).unwrap();
         let output = transcriber.transcribe(&capture.finish().unwrap()).unwrap();
@@ -1428,7 +1516,9 @@ mod tests {
 
     #[test]
     fn shortcut_policy_allows_hold_on_windows_and_x11_but_not_default_wayland() {
-        assert!(ShortcutPolicy::for_platform(ShortcutPlatform::Windows).supports(ShortcutMode::Hold));
+        assert!(
+            ShortcutPolicy::for_platform(ShortcutPlatform::Windows).supports(ShortcutMode::Hold)
+        );
         assert!(ShortcutPolicy::for_platform(ShortcutPlatform::X11).supports(ShortcutMode::Hold));
         let wayland = ShortcutPolicy::for_wayland(Compositor::Gnome, false);
         assert!(!wayland.supports(ShortcutMode::Hold));
@@ -1437,8 +1527,7 @@ mod tests {
             wayland.require(ShortcutMode::Hold),
             Err(ShortcutError::HoldUnavailable { .. })
         ));
-        assert!(ShortcutPolicy::for_wayland(Compositor::Gnome, true)
-            .supports(ShortcutMode::Hold));
+        assert!(ShortcutPolicy::for_wayland(Compositor::Gnome, true).supports(ShortcutMode::Hold));
     }
 
     #[test]

@@ -25,8 +25,7 @@ const SHORTCUT_ID: &str = "chamu_hold_dictation";
 const SHORTCUT_DESCRIPTION: &str = "Iniciar dictado mientras se mantiene pulsado";
 const CHAMU_APP_ID: &str = "com.chamu.desktop";
 const HOST_DESKTOP_ENTRY_FILE_NAME: &str = "com.chamu.desktop.desktop";
-const HOST_DESKTOP_ENTRY_CONTENT: &str =
-    include_str!("../resources/com.chamu.desktop.desktop");
+const HOST_DESKTOP_ENTRY_CONTENT: &str = include_str!("../resources/com.chamu.desktop.desktop");
 const HOST_REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";
 const CLEANUP_PENDING_MESSAGE: &str =
     "La limpieza de una sesión Wayland anterior todavía está pendiente";
@@ -545,7 +544,9 @@ async fn run_portal_session_with_session(
                 result = portal.receive_shortcuts_changed() => result,
                 _ = &mut *cancel => return Ok(SessionRunOutcome::Cancelled),
             }
-            .map_err(|error| format!("No se pudo escuchar los cambios del atajo Wayland: {error}"))?,
+            .map_err(|error| {
+                format!("No se pudo escuchar los cambios del atajo Wayland: {error}")
+            })?,
         )
     } else {
         None
@@ -561,7 +562,9 @@ async fn run_portal_session_with_session(
                 ) => result,
                 _ = &mut *cancel => return Ok(SessionRunOutcome::Cancelled),
             }
-            .map_err(|error| format!("No se pudo abrir la configuración del atajo Wayland: {error}"))?;
+            .map_err(|error| {
+                format!("No se pudo abrir la configuración del atajo Wayland: {error}")
+            })?;
 
             let listed = tokio::select! {
                 result = portal.list_shortcuts(session, ListShortcutsOptions::default()) => result,
@@ -569,7 +572,9 @@ async fn run_portal_session_with_session(
             }
             .map_err(|error| format!("No se pudo leer la asignación del atajo Wayland: {error}"))?
             .response()
-            .map_err(|error| format!("El portal no devolvió la asignación del atajo Wayland: {error}"))?;
+            .map_err(|error| {
+                format!("El portal no devolvió la asignación del atajo Wayland: {error}")
+            })?;
             let assigned = listed
                 .shortcuts()
                 .iter()
@@ -792,9 +797,7 @@ async fn create_session_with_cancellation(
 }
 
 fn host_registration_error(error: &str) -> String {
-    format!(
-        "No se pudo registrar Chamu ante el portal Wayland ({CHAMU_APP_ID}): {error}"
-    )
+    format!("No se pudo registrar Chamu ante el portal Wayland ({CHAMU_APP_ID}): {error}")
 }
 
 fn host_desktop_entry_path(
@@ -927,14 +930,8 @@ pub async fn run_portal_session(
     request_configuration: bool,
     cancel: oneshot::Receiver<()>,
 ) -> Result<(), String> {
-    let result = run_portal_session_inner(
-        shortcut,
-        &app,
-        generation,
-        request_configuration,
-        cancel,
-    )
-    .await;
+    let result =
+        run_portal_session_inner(shortcut, &app, generation, request_configuration, cancel).await;
     if let Err(error) = &result {
         let _ = emit_event_if_current(
             &app,
@@ -1055,13 +1052,12 @@ pub(crate) async fn clear_wayland_hold_shortcut(
 #[cfg(test)]
 mod tests {
     use super::{
-        configuration_action, event_matches_session, is_current_generation,
-        host_desktop_entry_path, host_registration_error, is_missing_host_registry,
+        configuration_action, event_matches_session, host_desktop_entry_path,
+        host_registration_error, is_current_generation, is_missing_host_registry,
         shortcut_change_trigger_description, stream_end_error, to_xdg_trigger, validate_shortcut,
-        CleanupPolicy,
-        PortalConfigurationAction, PortalEventKind, ShortcutCleanupState, ShortcutLifecycleState,
-        CLEANUP_POLICY, HOST_DESKTOP_ENTRY_CONTENT, HOST_DESKTOP_ENTRY_FILE_NAME,
-        HOST_REGISTRY_INTERFACE, SHORTCUT_ID,
+        CleanupPolicy, PortalConfigurationAction, PortalEventKind, ShortcutCleanupState,
+        ShortcutLifecycleState, CLEANUP_POLICY, HOST_DESKTOP_ENTRY_CONTENT,
+        HOST_DESKTOP_ENTRY_FILE_NAME, HOST_REGISTRY_INTERFACE, SHORTCUT_ID,
     };
 
     use std::path::Path;
@@ -1117,18 +1113,16 @@ mod tests {
 
     #[test]
     fn keeps_real_registry_rejections_as_terminal_errors() {
-        let error = ashpd::Error::Portal(ashpd::PortalError::NotAllowed(
-            "Register rejected".into(),
-        ));
+        let error =
+            ashpd::Error::Portal(ashpd::PortalError::NotAllowed("Register rejected".into()));
 
         assert!(!is_missing_host_registry(&error));
     }
 
     #[test]
     fn does_not_treat_another_missing_portal_interface_as_registry_fallback() {
-        let error = ashpd::Error::PortalNotFound(interface_name(
-            "org.freedesktop.portal.GlobalShortcuts",
-        ));
+        let error =
+            ashpd::Error::PortalNotFound(interface_name("org.freedesktop.portal.GlobalShortcuts"));
 
         assert!(!is_missing_host_registry(&error));
     }
@@ -1199,7 +1193,10 @@ mod tests {
             shortcut_change_trigger_description(
                 session,
                 session,
-                [("other_shortcut", "Ctrl+Alt+B"), (SHORTCUT_ID, "Ctrl+Alt+A")],
+                [
+                    ("other_shortcut", "Ctrl+Alt+B"),
+                    (SHORTCUT_ID, "Ctrl+Alt+A")
+                ],
             ),
             Some("Ctrl+Alt+A".to_string())
         );

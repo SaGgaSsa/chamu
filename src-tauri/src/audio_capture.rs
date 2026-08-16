@@ -408,7 +408,9 @@ fn build_capture_stream() -> Result<(cpal::Stream, SampleStore, CallbackError), 
     Ok((stream, samples, callback_error))
 }
 
-fn stream_error_callback(callback_error: CallbackError) -> impl FnMut(cpal::StreamError) + Send + 'static {
+fn stream_error_callback(
+    callback_error: CallbackError,
+) -> impl FnMut(cpal::StreamError) + Send + 'static {
     move |error| {
         if let Ok(mut slot) = callback_error.lock() {
             if slot.is_none() {

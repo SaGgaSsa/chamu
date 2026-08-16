@@ -16,23 +16,22 @@ use tauri::{
 };
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-mod core;
-mod dictation;
 mod audio_adapter;
 mod audio_capture;
+mod core;
+mod dictation;
 mod gnome_paste;
 mod wayland_shortcut;
 
-use core::{
-    append_diagnostic, app_storage_paths, command_available,
-    diagnose_platform as detect_platform, discover_models_in_dirs,
-    finalize_model_download, is_model_path_allowed, load_diagnostics, load_settings_file,
-    model_catalog, now_unix_millis, save_settings_file, validate_model_checksum, validate_settings,
-    AppSettings, DiagnosticRecord, DownloadController, HistoryEntry, HistoryStore, LocalModel,
-    ModelValidation,
-    PlatformDiagnosis, PlatformSession, RecordingLifecycle, RecordingPhase,
-};
 use audio_capture::CaptureSessionHandle;
+use core::{
+    app_storage_paths, append_diagnostic, command_available, diagnose_platform as detect_platform,
+    discover_models_in_dirs, finalize_model_download, is_model_path_allowed, load_diagnostics,
+    load_settings_file, model_catalog, now_unix_millis, save_settings_file,
+    validate_model_checksum, validate_settings, AppSettings, DiagnosticRecord, DownloadController,
+    HistoryEntry, HistoryStore, LocalModel, ModelValidation, PlatformDiagnosis, PlatformSession,
+    RecordingLifecycle, RecordingPhase,
+};
 
 struct RuntimeState {
     settings: Mutex<AppSettings>,
@@ -49,8 +48,7 @@ struct RuntimeState {
     model_activation: tauri::async_runtime::Mutex<()>,
 }
 
-static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,7 +169,9 @@ impl Default for RuntimeState {
             capture: Mutex::new(None),
             wayland_shortcut_task: Mutex::new(None),
             wayland_shortcut_operation: tauri::async_runtime::Mutex::new(()),
-            wayland_shortcut_lifecycle: Mutex::new(wayland_shortcut::ShortcutLifecycleState::default()),
+            wayland_shortcut_lifecycle: Mutex::new(
+                wayland_shortcut::ShortcutLifecycleState::default(),
+            ),
             wayland_shortcut_cleanup: Arc::new(Mutex::new(
                 wayland_shortcut::ShortcutCleanupState::default(),
             )),
@@ -211,6 +211,19 @@ impl CachedWhisperContext {
             return self.test_model_id.as_deref();
         }
         None
+    }
+
+    fn has_cached_model(&self, model_id: &str) -> bool {
+        (self.context.is_some() && self.model_id.as_deref() == Some(model_id)) || {
+            #[cfg(test)]
+            {
+                self.test_ready && self.test_model_id.as_deref() == Some(model_id)
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        }
     }
 }
 
@@ -401,18 +414,15 @@ fn chrono_like_iso8601(timestamp_millis: i64) -> String {
     let z = days + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }).div_euclid(146_097);
     let day_of_era = z - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
-        - day_of_era / 146_096)
-        / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_part = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_part + 2) / 5 + 1;
     let month = month_part + if month_part < 10 { 3 } else { -9 };
     let year = year + if month <= 2 { 1 } else { 0 };
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
 fn user_visible_platform_message(ok: bool, success: &str, failure: &str) -> String {
@@ -425,7 +435,10 @@ fn user_visible_platform_message(ok: bool, success: &str, failure: &str) -> Stri
 
 fn microphone_available() -> bool {
     if let Ok(value) = std::env::var("CHAMU_MICROPHONE_AVAILABLE") {
-        return matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "si");
+        return matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "si"
+        );
     }
     #[cfg(target_os = "linux")]
     {
@@ -667,6 +680,24 @@ fn cached_active_model_id(
     Ok(cached.active_model_id().map(str::to_owned))
 }
 
+fn cached_context_matches_model(cache: &CachedWhisperContext, model_id: &str) -> bool {
+    cache.has_cached_model(model_id)
+}
+
+fn cached_whisper_context_for_model(
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_id: &str,
+) -> Result<Option<Arc<WhisperContext>>, String> {
+    let (cache_lock, _) = &**cache;
+    let cached = cache_lock
+        .lock()
+        .map_err(|_| "No se pudo leer la caché del modelo".to_string())?;
+    if cached_context_matches_model(&cached, model_id) {
+        return Ok(cached.context.as_ref().map(Arc::clone));
+    }
+    Ok(None)
+}
+
 /// Loads the installed model outside the UI thread. A missing model is normal
 /// during onboarding, so it does not prevent the application from starting.
 fn warm_whisper_context(
@@ -729,8 +760,6 @@ fn transcribe_with_embedded_whisper(
 }
 
 struct TranscriptionWork {
-    model_id: String,
-    model_path: PathBuf,
     language: String,
     samples: Vec<i16>,
 }
@@ -830,7 +859,10 @@ fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, St
         .model_activation
         .try_lock()
         .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
-    let mut capture = state.capture.lock().map_err(|_| "No se pudo iniciar el micrófono".to_string())?;
+    let mut capture = state
+        .capture
+        .lock()
+        .map_err(|_| "No se pudo iniciar el micrófono".to_string())?;
     if capture.is_some() {
         return Err("Ya hay un dictado en curso".into());
     }
@@ -898,24 +930,23 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
 
         let whisper_context = Arc::clone(&state.whisper_context);
         let text = tauri::async_runtime::spawn_blocking(move || {
-            let (model, model_path) = installed_model_path(&model_id)?;
             let samples = capture.stop()?;
             if samples.is_empty() {
                 return Err("No se capturó audio; revisa el permiso del micrófono".into());
             }
-            let work = TranscriptionWork {
-                model_id,
-                model_path,
-                language,
-                samples,
+            let context = match cached_whisper_context_for_model(&whisper_context, &model_id)? {
+                Some(context) => context,
+                None => {
+                    let (model, model_path) = installed_model_path(&model_id)?;
+                    load_or_reuse_whisper_context(
+                        &whisper_context,
+                        &model_id,
+                        &model_path,
+                        &model.sha256,
+                    )?
+                }
             };
-            let expected_sha256 = model.sha256.clone();
-            let context = load_or_reuse_whisper_context(
-                &whisper_context,
-                &work.model_id,
-                &work.model_path,
-                &expected_sha256,
-            )?;
+            let work = TranscriptionWork { language, samples };
             transcribe_work(work, context)
         })
         .await
@@ -963,9 +994,8 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
                     pasted = true;
                 }
                 Err(error) => {
-                    message = format!(
-                        "Texto copiado al portapapeles local. Pégalo manualmente: {error}"
-                    );
+                    message =
+                        format!("Texto copiado al portapapeles local. Pégalo manualmente: {error}");
                 }
             }
         }
@@ -1099,17 +1129,11 @@ fn clear_history(state: State<'_, RuntimeState>) -> Result<(), String> {
     if history.is_none() {
         *history = Some(HistoryStore::open(history_path()?)?);
     }
-    history
-        .as_mut()
-        .expect("history store initialized")
-        .clear()
+    history.as_mut().expect("history store initialized").clear()
 }
 
 #[tauri::command]
-fn copy_history_entry(
-    id: serde_json::Value,
-    state: State<'_, RuntimeState>,
-) -> Result<(), String> {
+fn copy_history_entry(id: serde_json::Value, state: State<'_, RuntimeState>) -> Result<(), String> {
     let id = parse_history_id(id)?;
     let mut history = state
         .history
@@ -1168,7 +1192,10 @@ fn validate_model_activation_light(
     download_active: bool,
 ) -> Result<(), String> {
     model_metadata(model_id)?;
-    if matches!(phase, RecordingPhase::Recording | RecordingPhase::Transcribing) {
+    if matches!(
+        phase,
+        RecordingPhase::Recording | RecordingPhase::Transcribing
+    ) {
         return Err("No se puede cambiar el modelo durante la grabación o la transcripción".into());
     }
     if download_active {
@@ -1188,8 +1215,7 @@ fn inspect_model_snapshot(
 ) -> Result<ModelStatus, String> {
     let mut status = model_status(model_id)?;
     let active_model_id = cached_active_model_id(cache)?;
-    status.active = status.checksum_valid
-        && active_model_id.as_deref() == Some(status.id.as_str());
+    status.active = status.checksum_valid && active_model_id.as_deref() == Some(status.id.as_str());
     Ok(status)
 }
 
@@ -1209,15 +1235,12 @@ async fn inspect_model(
     tauri::async_runtime::spawn_blocking(move || {
         inspect_model_snapshot(&requested_model_id, &whisper_context)
     })
-        .await
-        .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())?
+    .await
+    .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())?
 }
 
 #[tauri::command]
-async fn activate_model(
-    model_id: String,
-    state: State<'_, RuntimeState>,
-) -> Result<(), String> {
+async fn activate_model(model_id: String, state: State<'_, RuntimeState>) -> Result<(), String> {
     let _activation_guard = state.model_activation.lock().await;
     let phase = state
         .recording
@@ -1231,20 +1254,10 @@ async fn activate_model(
     let preparation_model_id = model_id.clone();
     let prepared_context = tauri::async_runtime::spawn_blocking(move || {
         let status = model_status(&preparation_model_id)?;
-        validate_model_activation_request(
-            &preparation_model_id,
-            phase,
-            download_active,
-            &status,
-        )?;
+        validate_model_activation_request(&preparation_model_id, phase, download_active, &status)?;
         let (model, model_path) = installed_model_path(&preparation_model_id)?;
         let expected_sha256 = model.sha256.clone();
-        prepare_whisper_context(
-            &cache,
-            &preparation_model_id,
-            &model_path,
-            &expected_sha256,
-        )
+        prepare_whisper_context(&cache, &preparation_model_id, &model_path, &expected_sha256)
     })
     .await
     .map_err(|_| "La preparación del modelo terminó inesperadamente".to_string())??;
@@ -1289,9 +1302,10 @@ async fn start_model_download(
         .find(|model| model.id == model_id)
         .ok_or_else(|| "Modelo no disponible".to_string())?;
     let status_model_id = model_id.clone();
-    let current_status = tauri::async_runtime::spawn_blocking(move || model_status(&status_model_id))
-        .await
-        .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())??;
+    let current_status =
+        tauri::async_runtime::spawn_blocking(move || model_status(&status_model_id))
+            .await
+            .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())??;
     if current_status.installed && current_status.checksum_valid {
         emit_model_download_progress(
             &app,
@@ -1668,10 +1682,7 @@ fn test_paste() -> ClipboardCheck {
     } else {
         "No se pudo detectar un método local para pegar en la aplicación activa.".into()
     };
-    ClipboardCheck {
-        ok,
-        message,
-    }
+    ClipboardCheck { ok, message }
 }
 
 #[tauri::command]
@@ -1683,11 +1694,8 @@ fn record_diagnostic(
         return Err("El atajo no puede estar vacío".into());
     }
     let diagnosis = detect_platform();
-    let record = DiagnosticRecord::from_diagnosis(
-        shortcut,
-        DiagnosticRecord::new_session_id(),
-        &diagnosis,
-    );
+    let record =
+        DiagnosticRecord::from_diagnosis(shortcut, DiagnosticRecord::new_session_id(), &diagnosis);
     append_diagnostic(&diagnostics_path()?, &record)?;
     state
         .diagnostics
@@ -1963,9 +1971,7 @@ mod tests {
         {
             let mut recording = state.recording.lock().expect("lock recording");
             recording.start().expect("start recording");
-            recording
-                .stop_without_audio()
-                .expect("begin transcription");
+            recording.stop_without_audio().expect("begin transcription");
             assert_eq!(recording.phase(), RecordingPhase::Transcribing);
         }
 
@@ -1980,16 +1986,12 @@ mod tests {
     }
 
     #[test]
-    fn transcription_work_owns_model_language_and_audio() {
+    fn transcription_work_owns_language_and_audio() {
         let work = TranscriptionWork {
-            model_id: "base".to_string(),
-            model_path: PathBuf::from("/tmp/ggml-base.bin"),
             language: "es".to_string(),
             samples: vec![1, -2, 3],
         };
 
-        assert_eq!(work.model_id, "base");
-        assert_eq!(work.model_path, PathBuf::from("/tmp/ggml-base.bin"));
         assert_eq!(work.language, "es");
         assert_eq!(work.samples, vec![1, -2, 3]);
     }
@@ -2028,13 +2030,9 @@ mod tests {
     #[test]
     fn activation_rejects_recording_phase() {
         let status = test_model_status(true, true);
-        let error = validate_model_activation_request(
-            "small",
-            RecordingPhase::Recording,
-            false,
-            &status,
-        )
-        .expect_err("activation must reject recording");
+        let error =
+            validate_model_activation_request("small", RecordingPhase::Recording, false, &status)
+                .expect_err("activation must reject recording");
         assert!(error.contains("grabación"));
     }
 
@@ -2054,39 +2052,27 @@ mod tests {
     #[test]
     fn activation_rejects_active_download() {
         let status = test_model_status(true, true);
-        let error = validate_model_activation_request(
-            "small",
-            RecordingPhase::Ready,
-            true,
-            &status,
-        )
-        .expect_err("activation must reject active download");
+        let error =
+            validate_model_activation_request("small", RecordingPhase::Ready, true, &status)
+                .expect_err("activation must reject active download");
         assert!(error.contains("descarga"));
     }
 
     #[test]
     fn activation_rejects_missing_model() {
         let status = test_model_status(false, false);
-        let error = validate_model_activation_request(
-            "small",
-            RecordingPhase::Ready,
-            false,
-            &status,
-        )
-        .expect_err("activation must reject missing model");
+        let error =
+            validate_model_activation_request("small", RecordingPhase::Ready, false, &status)
+                .expect_err("activation must reject missing model");
         assert!(error.contains("instalado"));
     }
 
     #[test]
     fn activation_rejects_invalid_checksum() {
         let status = test_model_status(true, false);
-        let error = validate_model_activation_request(
-            "small",
-            RecordingPhase::Ready,
-            false,
-            &status,
-        )
-        .expect_err("activation must reject invalid checksum");
+        let error =
+            validate_model_activation_request("small", RecordingPhase::Ready, false, &status)
+                .expect_err("activation must reject invalid checksum");
         assert!(error.contains("checksum"));
     }
 
@@ -2110,6 +2096,36 @@ mod tests {
 
         assert!(cache.is_ready_for_model("base"));
         assert!(!cache.is_ready_for_model("small"));
+    }
+
+    #[test]
+    fn cached_context_fast_path_accepts_each_catalog_model_id() {
+        for model_id in ["base", "small", "large-v3-turbo-q5_0"] {
+            let mut cache = CachedWhisperContext::default();
+            cache.mark_ready_for_test(model_id);
+
+            assert!(cache.has_cached_model(model_id));
+            assert!(!cache.has_cached_model("not-a-model"));
+        }
+    }
+
+    #[test]
+    fn cached_context_hit_skips_model_resolution_for_all_supported_models() {
+        for model_id in ["base", "small", "large-v3-turbo-q5_0"] {
+            let mut cache = CachedWhisperContext::default();
+            cache.mark_ready_for_test(model_id);
+            let mut resolution_calls = 0;
+
+            let selected_path = if cached_context_matches_model(&cache, model_id) {
+                "cache"
+            } else {
+                resolution_calls += 1;
+                "model-resolution-and-validation"
+            };
+
+            assert_eq!(selected_path, "cache", "model ID: {model_id}");
+            assert_eq!(resolution_calls, 0, "model ID: {model_id}");
+        }
     }
 
     #[test]

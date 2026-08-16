@@ -35,14 +35,9 @@ pub fn install_extension() -> Result<(), String> {
         .map_err(|error| io_error("crear el directorio de extensiones", &extensions_dir, error))?;
 
     let destination = extensions_dir.join(EXTENSION_UUID);
-    let temporary = extensions_dir.join(format!(
-        ".{EXTENSION_UUID}.install-{}",
-        std::process::id()
-    ));
-    let backup = extensions_dir.join(format!(
-        ".{EXTENSION_UUID}.previous-{}",
-        std::process::id()
-    ));
+    let temporary =
+        extensions_dir.join(format!(".{EXTENSION_UUID}.install-{}", std::process::id()));
+    let backup = extensions_dir.join(format!(".{EXTENSION_UUID}.previous-{}", std::process::id()));
 
     remove_path_if_present(&temporary)?;
     remove_path_if_present(&backup)?;
@@ -152,11 +147,7 @@ fn extension_source_dir() -> Result<PathBuf, String> {
     candidates
         .into_iter()
         .find(|candidate| candidate.is_dir())
-        .ok_or_else(|| {
-            format!(
-                "No se encontró el recurso de la extensión GNOME {EXTENSION_UUID}"
-            )
-        })
+        .ok_or_else(|| format!("No se encontró el recurso de la extensión GNOME {EXTENSION_UUID}"))
 }
 
 fn user_extensions_dir() -> Result<PathBuf, String> {
@@ -189,14 +180,23 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
             source.display()
         ));
     }
-    fs::create_dir_all(destination)
-        .map_err(|error| io_error("crear el directorio temporal de la extensión", destination, error))?;
+    fs::create_dir_all(destination).map_err(|error| {
+        io_error(
+            "crear el directorio temporal de la extensión",
+            destination,
+            error,
+        )
+    })?;
 
     let entries = fs::read_dir(source)
         .map_err(|error| io_error("leer el recurso de la extensión GNOME", source, error))?;
     for entry in entries {
         let entry = entry.map_err(|error| {
-            io_error("leer una entrada del recurso de la extensión GNOME", source, error)
+            io_error(
+                "leer una entrada del recurso de la extensión GNOME",
+                source,
+                error,
+            )
         })?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
@@ -231,7 +231,13 @@ fn remove_path_if_present(path: &Path) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(io_error("inspeccionar una ruta de la extensión", path, error)),
+        Err(error) => {
+            return Err(io_error(
+                "inspeccionar una ruta de la extensión",
+                path,
+                error,
+            ))
+        }
     };
     let result = if metadata.is_dir() {
         fs::remove_dir_all(path)
@@ -289,10 +295,7 @@ mod tests {
     }
 
     fn test_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "chamu-gnome-paste-{name}-{}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("chamu-gnome-paste-{name}-{}", std::process::id()))
     }
 
     fn remove_test_root(root: &PathBuf) {

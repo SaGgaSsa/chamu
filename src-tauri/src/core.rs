@@ -23,7 +23,8 @@ pub const MODEL_SMALL_URL: &str =
 pub const MODEL_SMALL_SIZE_BYTES: u64 = 487_601_967;
 pub const MODEL_LARGE_V3_TURBO_Q5_0_SHA256: &str =
     "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
-pub const MODEL_LARGE_V3_TURBO_Q5_0_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
+pub const MODEL_LARGE_V3_TURBO_Q5_0_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 pub const MODEL_LARGE_V3_TURBO_Q5_0_SIZE_BYTES: u64 = 574_041_195;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,7 +65,10 @@ pub fn validate_settings(settings: &AppSettings) -> Result<(), String> {
     if settings.shortcut.len() > 200 {
         return Err("El atajo es demasiado largo".into());
     }
-    if !model_catalog().iter().any(|model| model.id == settings.model_id) {
+    if !model_catalog()
+        .iter()
+        .any(|model| model.id == settings.model_id)
+    {
         return Err("Modelo no disponible".into());
     }
     Ok(())
@@ -93,7 +97,8 @@ pub fn save_settings_file(path: &Path, settings: &AppSettings) -> Result<(), Str
         .write(true)
         .open(&temporary)
         .map_err(|error| error.to_string())?;
-    file.write_all(&serialized).map_err(|error| error.to_string())?;
+    file.write_all(&serialized)
+        .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
     set_private_permissions(&temporary);
 
@@ -335,7 +340,10 @@ fn normalized_sha256(value: &str) -> Option<String> {
     Some(value.to_ascii_lowercase())
 }
 
-pub fn validate_model_checksum(path: &Path, expected_sha256: &str) -> Result<ModelValidation, String> {
+pub fn validate_model_checksum(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<ModelValidation, String> {
     let expected = normalized_sha256(expected_sha256)
         .ok_or_else(|| "El checksum SHA-256 debe tener 64 caracteres hexadecimales".to_string())?;
     let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
@@ -444,7 +452,9 @@ pub fn discover_models_in_dirs(directories: &[PathBuf]) -> Result<Vec<LocalModel
         for entry in entries {
             let entry = entry.map_err(|error| error.to_string())?;
             let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|extension| extension.to_str()) != Some("bin") {
+            if !path.is_file()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("bin")
+            {
                 continue;
             }
             let filename = match path.file_name().and_then(|name| name.to_str()) {
@@ -498,19 +508,25 @@ pub struct AppStoragePaths {
 }
 
 fn user_dir(primary: &str, fallback: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
-    std::env::var_os(primary).map(PathBuf::from).or_else(fallback)
+    std::env::var_os(primary)
+        .map(PathBuf::from)
+        .or_else(fallback)
 }
 
 pub fn app_storage_paths() -> Result<AppStoragePaths, String> {
     #[cfg(windows)]
-    let config_base = user_dir("APPDATA", || std::env::var_os("USERPROFILE").map(PathBuf::from));
+    let config_base = user_dir("APPDATA", || {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    });
     #[cfg(not(windows))]
     let config_base = user_dir("XDG_CONFIG_HOME", || {
         std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
     });
 
     #[cfg(windows)]
-    let data_base = user_dir("LOCALAPPDATA", || std::env::var_os("APPDATA").map(PathBuf::from));
+    let data_base = user_dir("LOCALAPPDATA", || {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    });
     #[cfg(not(windows))]
     let data_base = user_dir("XDG_DATA_HOME", || {
         std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
@@ -548,7 +564,10 @@ pub fn is_model_path_allowed(path: &Path, directories: &[PathBuf]) -> Result<boo
             Err(error) => Some(Err(error.to_string())),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(canonical_path_is_allowed(&canonical_path, &canonical_directories))
+    Ok(canonical_path_is_allowed(
+        &canonical_path,
+        &canonical_directories,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -630,11 +649,7 @@ impl DownloadController {
 
     pub fn finish(&self, model_id: &str) {
         let session = self.current.lock().ok().and_then(|mut current| {
-            if current
-                .as_ref()
-                .map(|session| session.model_id.as_str())
-                == Some(model_id)
-            {
+            if current.as_ref().map(|session| session.model_id.as_str()) == Some(model_id) {
                 current.take()
             } else {
                 None
@@ -687,7 +702,9 @@ struct EphemeralAudioBuffer {
 
 impl Default for EphemeralAudioBuffer {
     fn default() -> Self {
-        Self { samples: Vec::new() }
+        Self {
+            samples: Vec::new(),
+        }
     }
 }
 
@@ -762,7 +779,10 @@ impl RecordingLifecycle {
     }
 
     pub fn start(&mut self) -> Result<RecordingToken, String> {
-        if matches!(self.phase, RecordingPhase::Recording | RecordingPhase::Transcribing) {
+        if matches!(
+            self.phase,
+            RecordingPhase::Recording | RecordingPhase::Transcribing
+        ) {
             return Err("Ya hay un dictado en curso".into());
         }
         self.buffer.clear();
@@ -898,7 +918,10 @@ fn detect_session(environment: PlatformEnvironment<'_>) -> PlatformSession {
     if environment.os.eq_ignore_ascii_case("windows") {
         return PlatformSession::Windows;
     }
-    let session = environment.session_type.unwrap_or_default().to_ascii_lowercase();
+    let session = environment
+        .session_type
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if session == "wayland" || environment.wayland_display.is_some() {
         PlatformSession::Wayland
     } else if session == "x11" || environment.x_display.is_some() {
@@ -912,7 +935,9 @@ fn distro_install_hint(commands: &[&str]) -> Option<String> {
     if commands.is_empty() {
         return None;
     }
-    let release = fs::read_to_string("/etc/os-release").unwrap_or_default().to_ascii_lowercase();
+    let release = fs::read_to_string("/etc/os-release")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let packages = commands.join(" ");
     if release.contains("debian") || release.contains("ubuntu") || release.contains("mint") {
         Some(format!("sudo apt install {packages}"))
@@ -1064,7 +1089,11 @@ where
         PlatformSession::X11 => ("x11-global-hook".into(), true, true),
         PlatformSession::Wayland => match wayland_portal_available {
             Some(true) => ("xdg-global-shortcuts-portal".into(), true, true),
-            Some(false) => ("xdg-global-shortcuts-portal (no disponible)".into(), false, true),
+            Some(false) => (
+                "xdg-global-shortcuts-portal (no disponible)".into(),
+                false,
+                true,
+            ),
             None => ("xdg-global-shortcuts-portal".into(), false, true),
         },
         PlatformSession::Unknown => ("unavailable".into(), false, false),
@@ -1103,7 +1132,11 @@ pub struct DiagnosticRecord {
 }
 
 impl DiagnosticRecord {
-    pub fn from_diagnosis(shortcut: String, session_id: String, diagnosis: &PlatformDiagnosis) -> Self {
+    pub fn from_diagnosis(
+        shortcut: String,
+        session_id: String,
+        diagnosis: &PlatformDiagnosis,
+    ) -> Self {
         Self {
             session_id,
             recorded_at: now_unix_millis(),
@@ -1135,7 +1168,8 @@ pub fn append_diagnostic(path: &Path, record: &DiagnosticRecord) -> Result<(), S
         .append(true)
         .open(path)
         .map_err(|error| error.to_string())?;
-    file.write_all(line.as_bytes()).map_err(|error| error.to_string())?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| error.to_string())?;
     file.write_all(b"\n").map_err(|error| error.to_string())?;
     file.sync_data().map_err(|error| error.to_string())?;
     set_private_permissions(path);
@@ -1267,8 +1301,10 @@ mod tests {
         fs::write(&outside_model, b"model").expect("write outside model");
 
         assert!(is_model_path_allowed(&allowed_model, &[allowed]).expect("check allowed path"));
-        assert!(!is_model_path_allowed(&outside_model, &[root.join("allowed")])
-            .expect("check outside path"));
+        assert!(
+            !is_model_path_allowed(&outside_model, &[root.join("allowed")])
+                .expect("check outside path")
+        );
     }
 
     #[test]
@@ -1282,7 +1318,10 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text, "texto local");
         assert_eq!(entries[0].timestamp, 1_700_000_000_000);
-        assert_eq!(history.text_by_id(id).expect("lookup"), Some("texto local".into()));
+        assert_eq!(
+            history.text_by_id(id).expect("lookup"),
+            Some("texto local".into())
+        );
         assert_eq!(history.text_by_id(id + 1).expect("missing lookup"), None);
         history.delete(id).expect("delete");
         assert!(history.list(10).expect("list after delete").is_empty());
@@ -1294,13 +1333,19 @@ mod tests {
         let path = root.join("ggml-base.bin");
         fs::write(&path, b"model bytes").expect("write model");
         let expected = sha256_file(&path).expect("hash");
-        assert!(validate_model_checksum(&path, &expected).expect("validate").is_valid);
-        assert!(!validate_model_checksum(
-            &path,
-            "0000000000000000000000000000000000000000000000000000000000000000"
-        )
-        .expect("validate")
-        .is_valid);
+        assert!(
+            validate_model_checksum(&path, &expected)
+                .expect("validate")
+                .is_valid
+        );
+        assert!(
+            !validate_model_checksum(
+                &path,
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            )
+            .expect("validate")
+            .is_valid
+        );
     }
 
     #[test]
@@ -1311,7 +1356,10 @@ mod tests {
         let models = discover_models_in_dirs(&[root]).expect("discover models");
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "base");
-        assert_eq!(models[0].expected_sha256.as_deref(), Some(MODEL_BASE_SHA256));
+        assert_eq!(
+            models[0].expected_sha256.as_deref(),
+            Some(MODEL_BASE_SHA256)
+        );
         assert_eq!(models[0].is_valid, Some(false));
     }
 
@@ -1398,7 +1446,10 @@ mod tests {
 
         assert!(validation.is_valid);
         assert!(!temporary.exists());
-        assert_eq!(fs::read(&destination).expect("read installed model"), b"complete model");
+        assert_eq!(
+            fs::read(&destination).expect("read installed model"),
+            b"complete model"
+        );
     }
 
     #[test]
@@ -1515,7 +1566,10 @@ mod tests {
         assert_eq!(available.wayland_portal_available, Some(true));
 
         let unavailable = diagnose_platform_with_portal(environment, |_command| false, Some(false));
-        assert_eq!(unavailable.shortcut_method, "xdg-global-shortcuts-portal (no disponible)");
+        assert_eq!(
+            unavailable.shortcut_method,
+            "xdg-global-shortcuts-portal (no disponible)"
+        );
         assert!(!unavailable.hold_mode_supported);
         assert_eq!(unavailable.wayland_portal_available, Some(false));
     }
@@ -1532,11 +1586,8 @@ mod tests {
             },
             |_command| true,
         );
-        let record = DiagnosticRecord::from_diagnosis(
-            "Ctrl+Super".into(),
-            "session-1".into(),
-            &diagnosis,
-        );
+        let record =
+            DiagnosticRecord::from_diagnosis("Ctrl+Super".into(), "session-1".into(), &diagnosis);
         let json = serde_json::to_string(&record).expect("serialize diagnostic");
         assert!(!json.contains("audio"));
         assert!(!json.contains("texto"));
@@ -1556,11 +1607,8 @@ mod tests {
             },
             |_command| false,
         );
-        let record = DiagnosticRecord::from_diagnosis(
-            "Ctrl+Space".into(),
-            "session-2".into(),
-            &diagnosis,
-        );
+        let record =
+            DiagnosticRecord::from_diagnosis("Ctrl+Space".into(), "session-2".into(), &diagnosis);
         let path = root.join("diagnostics.jsonl");
         append_diagnostic(&path, &record).expect("append diagnostic");
         let records = load_diagnostics(&path).expect("load diagnostics");
