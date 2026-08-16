@@ -318,6 +318,7 @@ fn model_download_temp_path(destination: &Path) -> PathBuf {
 }
 
 const DOWNLOAD_CANCELLED_MESSAGE: &str = "Descarga cancelada";
+const MODEL_OPERATION_BUSY_MESSAGE: &str = "El modelo está cambiando; inténtalo de nuevo";
 const MODEL_DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn model_download_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
@@ -716,7 +717,7 @@ fn get_settings(state: State<'_, RuntimeState>) -> Result<AppSettings, String> {
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     let path = settings_path()?;
     let settings = match load_settings_file(&path) {
         Ok(settings) => settings,
@@ -735,7 +736,7 @@ fn set_settings(settings: AppSettings, state: State<'_, RuntimeState>) -> Result
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     validate_settings(&settings)?;
     let active_model_id = state
         .settings
@@ -759,7 +760,7 @@ fn set_recording_active(active: bool, state: State<'_, RuntimeState>) -> Result<
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     let mut recording = state
         .recording
         .lock()
@@ -779,7 +780,7 @@ fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, St
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     let mut capture = state.capture.lock().map_err(|_| "No se pudo iniciar el micrófono".to_string())?;
     if capture.is_some() {
         return Err("Ya hay un dictado en curso".into());
@@ -817,7 +818,7 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
             let _model_operation = state
                 .model_activation
                 .try_lock()
-                .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+                .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
             let capture = state
                 .capture
                 .lock()
@@ -953,7 +954,7 @@ fn mark_recording_copied(state: State<'_, RuntimeState>) -> Result<(), String> {
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     state
         .recording
         .lock()
@@ -967,7 +968,7 @@ fn mark_recording_ready(state: State<'_, RuntimeState>) -> Result<(), String> {
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     state
         .recording
         .lock()
@@ -981,7 +982,7 @@ fn mark_recording_error(state: State<'_, RuntimeState>) -> Result<(), String> {
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     state
         .recording
         .lock()
@@ -1140,7 +1141,7 @@ fn inspect_model(
     let _model_operation = state
         .model_activation
         .try_lock()
-        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     let active_model_id = state
         .settings
         .lock()
@@ -1225,6 +1226,10 @@ fn start_model_download(
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<(), String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     let model = model_catalog()
         .into_iter()
         .find(|model| model.id == model_id)
@@ -2031,5 +2036,31 @@ mod tests {
             .expect("acquire activation gate");
 
         assert!(!model_operation_is_available(&state));
+    }
+
+    #[test]
+    fn model_operation_gate_serializes_activation_and_download_start() {
+        let state = RuntimeState::default();
+        let activation_guard = state
+            .model_activation
+            .try_lock()
+            .expect("acquire activation gate");
+        assert!(!model_operation_is_available(&state));
+        drop(activation_guard);
+
+        let download_guard = state
+            .model_activation
+            .try_lock()
+            .expect("acquire download gate");
+        assert!(!model_operation_is_available(&state));
+        drop(download_guard);
+    }
+
+    #[test]
+    fn model_operation_busy_message_is_literal() {
+        assert_eq!(
+            MODEL_OPERATION_BUSY_MESSAGE,
+            "El modelo está cambiando; inténtalo de nuevo"
+        );
     }
 }
