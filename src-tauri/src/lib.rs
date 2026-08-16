@@ -189,6 +189,7 @@ struct CachedWhisperContext {
     context: Option<Arc<WhisperContext>>,
     model_id: Option<String>,
     loading: bool,
+    generation: u64,
     #[cfg(test)]
     test_ready: bool,
     #[cfg(test)]
@@ -200,6 +201,19 @@ fn model_operation_is_available(state: &RuntimeState) -> bool {
     state.model_activation.try_lock().is_ok()
 }
 
+impl CachedWhisperContext {
+    fn active_model_id(&self) -> Option<&str> {
+        if self.context.is_some() {
+            return self.model_id.as_deref();
+        }
+        #[cfg(test)]
+        if self.test_ready {
+            return self.test_model_id.as_deref();
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 impl CachedWhisperContext {
     fn is_ready(&self) -> bool {
@@ -207,12 +221,14 @@ impl CachedWhisperContext {
     }
 
     fn mark_ready_for_test(&mut self, model_id: &str) {
+        self.generation = self.generation.wrapping_add(1);
         self.loading = false;
         self.test_ready = true;
         self.test_model_id = Some(model_id.into());
     }
 
     fn mark_failed_for_test(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.context = None;
         self.model_id = None;
         self.loading = false;
@@ -223,6 +239,20 @@ impl CachedWhisperContext {
     fn is_ready_for_model(&self, model_id: &str) -> bool {
         (self.context.is_some() && self.model_id.as_deref() == Some(model_id))
             || (self.test_ready && self.test_model_id.as_deref() == Some(model_id))
+    }
+
+    #[cfg(test)]
+    fn load_generation_for_test(&self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    fn commit_test_context_for_generation(&mut self, model_id: &str, generation: u64) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.mark_ready_for_test(model_id);
+        true
     }
 }
 
@@ -238,7 +268,7 @@ fn diagnostics_path() -> Result<PathBuf, String> {
     Ok(app_storage_paths()?.data_dir.join("diagnostics.jsonl"))
 }
 
-fn model_status(model_id: &str, active_model_id: Option<&str>) -> Result<ModelStatus, String> {
+fn model_status(model_id: &str) -> Result<ModelStatus, String> {
     let metadata = model_catalog()
         .into_iter()
         .find(|model| model.id == model_id)
@@ -253,7 +283,9 @@ fn model_status(model_id: &str, active_model_id: Option<&str>) -> Result<ModelSt
         label: metadata.label.clone(),
         installed: false,
         checksum_valid: false,
-        active: active_model_id == Some(metadata.id.as_str()),
+        // The active status is assigned by the command after it reads the
+        // validated context cache. The settings value alone is not sufficient.
+        active: false,
         size_mib: metadata.size_bytes as f64 / (1024.0 * 1024.0),
         progress: None,
         error: None,
@@ -535,20 +567,24 @@ fn load_or_reuse_whisper_context(
             continue;
         }
         cached.loading = true;
+        let load_generation = cached.generation;
         drop(cached);
 
         let result = load_validated_whisper_context(model_path, expected_sha256);
         let mut cached = cache_lock
             .lock()
             .map_err(|_| "No se pudo actualizar la caché del modelo".to_string())?;
-        cached.loading = false;
-        if let Ok(context) = &result {
-            cached.context = Some(Arc::clone(context));
-            cached.model_id = Some(model_id.to_string());
-            #[cfg(test)]
-            {
-                cached.test_ready = false;
-                cached.test_model_id = None;
+        if cached.generation == load_generation {
+            cached.loading = false;
+            if let Ok(context) = &result {
+                cached.context = Some(Arc::clone(context));
+                cached.model_id = Some(model_id.to_string());
+                cached.generation = cached.generation.wrapping_add(1);
+                #[cfg(test)]
+                {
+                    cached.test_ready = false;
+                    cached.test_model_id = None;
+                }
             }
         }
         cache_ready.notify_all();
@@ -585,13 +621,16 @@ fn prepare_whisper_context(
             continue;
         }
         cached.loading = true;
+        let load_generation = cached.generation;
         drop(cached);
 
         let result = load_validated_whisper_context(model_path, expected_sha256);
         let mut cached = cache_lock
             .lock()
             .map_err(|_| "No se pudo actualizar la caché del modelo".to_string())?;
-        cached.loading = false;
+        if cached.generation == load_generation {
+            cached.loading = false;
+        }
         cache_ready.notify_all();
         return result;
     }
@@ -609,6 +648,7 @@ fn replace_cached_whisper_context(
     };
     cached.context = Some(context);
     cached.model_id = Some(model_id.to_string());
+    cached.generation = cached.generation.wrapping_add(1);
     cached.loading = false;
     #[cfg(test)]
     {
@@ -616,6 +656,16 @@ fn replace_cached_whisper_context(
         cached.test_model_id = None;
     }
     cache_ready.notify_all();
+}
+
+fn cached_active_model_id(
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+) -> Result<Option<String>, String> {
+    let (cache_lock, _) = &**cache;
+    let cached = cache_lock
+        .lock()
+        .map_err(|_| "No se pudo leer la caché del modelo".to_string())?;
+    Ok(cached.active_model_id().map(str::to_owned))
 }
 
 /// Loads the installed model outside the UI thread. A missing model is normal
@@ -1134,7 +1184,7 @@ fn get_model_catalog() -> Vec<core::ModelMetadata> {
 }
 
 #[tauri::command]
-fn inspect_model(
+async fn inspect_model(
     model_id: Option<String>,
     state: State<'_, RuntimeState>,
 ) -> Result<ModelStatus, String> {
@@ -1142,14 +1192,20 @@ fn inspect_model(
         .model_activation
         .try_lock()
         .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
-    let active_model_id = state
+    let settings_model_id = state
         .settings
         .lock()
         .map_err(|_| "No se pudo leer la configuración actual".to_string())?
         .model_id
         .clone();
-    let requested_model_id = model_id.unwrap_or_else(|| active_model_id.clone());
-    model_status(&requested_model_id, Some(&active_model_id))
+    let requested_model_id = model_id.unwrap_or(settings_model_id);
+    let mut status = tauri::async_runtime::spawn_blocking(move || model_status(&requested_model_id))
+        .await
+        .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())??;
+    let active_model_id = cached_active_model_id(&state.whisper_context)?;
+    status.active = status.checksum_valid
+        && active_model_id.as_deref() == Some(status.id.as_str());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1158,12 +1214,6 @@ async fn activate_model(
     state: State<'_, RuntimeState>,
 ) -> Result<(), String> {
     let _activation_guard = state.model_activation.lock().await;
-    let active_model_id = state
-        .settings
-        .lock()
-        .map_err(|_| "No se pudo leer la configuración actual".to_string())?
-        .model_id
-        .clone();
     let phase = state
         .recording
         .lock()
@@ -1174,9 +1224,8 @@ async fn activate_model(
 
     let cache = Arc::clone(&state.whisper_context);
     let preparation_model_id = model_id.clone();
-    let preparation_active_model_id = active_model_id.clone();
     let prepared_context = tauri::async_runtime::spawn_blocking(move || {
-        let status = model_status(&preparation_model_id, Some(&preparation_active_model_id))?;
+        let status = model_status(&preparation_model_id)?;
         validate_model_activation_request(
             &preparation_model_id,
             phase,
@@ -1221,7 +1270,7 @@ async fn activate_model(
 }
 
 #[tauri::command]
-fn start_model_download(
+async fn start_model_download(
     model_id: String,
     app: AppHandle,
     state: State<'_, RuntimeState>,
@@ -1234,7 +1283,10 @@ fn start_model_download(
         .into_iter()
         .find(|model| model.id == model_id)
         .ok_or_else(|| "Modelo no disponible".to_string())?;
-    let current_status = model_status(&model_id, None)?;
+    let status_model_id = model_id.clone();
+    let current_status = tauri::async_runtime::spawn_blocking(move || model_status(&status_model_id))
+        .await
+        .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())??;
     if current_status.installed && current_status.checksum_valid {
         emit_model_download_progress(
             &app,
@@ -1462,43 +1514,49 @@ fn perform_model_download(
 }
 
 #[tauri::command]
-fn discover_models() -> Result<Vec<LocalModel>, String> {
+async fn discover_models() -> Result<Vec<LocalModel>, String> {
     let paths = app_storage_paths()?.model_dirs;
-    discover_models_in_dirs(&paths)
+    tauri::async_runtime::spawn_blocking(move || discover_models_in_dirs(&paths))
+        .await
+        .map_err(|_| "El descubrimiento de modelos terminó inesperadamente".to_string())?
 }
 
 #[tauri::command]
-fn validate_model(
+async fn validate_model(
     path: String,
     expected_sha256: Option<String>,
 ) -> Result<ModelValidation, String> {
-    let path = PathBuf::from(path);
-    let paths = app_storage_paths()?;
-    if !is_model_path_allowed(&path, &paths.model_dirs)? {
-        return Err("La ruta del modelo está fuera de los directorios permitidos".into());
-    }
-    let filename = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "Modelo no disponible".to_string())?;
-    let model = model_catalog()
-        .into_iter()
-        .find(|model| model.filename == filename)
-        .ok_or_else(|| "Modelo no disponible".to_string())?;
-    let expected = match expected_sha256 {
-        Some(expected) => {
-            let normalized = expected
-                .trim()
-                .strip_prefix("sha256:")
-                .unwrap_or(expected.trim());
-            if !normalized.eq_ignore_ascii_case(&model.sha256) {
-                return Err("El checksum no corresponde a un modelo del catálogo".into());
-            }
-            model.sha256
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(path);
+        let paths = app_storage_paths()?;
+        if !is_model_path_allowed(&path, &paths.model_dirs)? {
+            return Err("La ruta del modelo está fuera de los directorios permitidos".into());
         }
-        None => model.sha256,
-    };
-    validate_model_checksum(&path, &expected)
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Modelo no disponible".to_string())?;
+        let model = model_catalog()
+            .into_iter()
+            .find(|model| model.filename == filename)
+            .ok_or_else(|| "Modelo no disponible".to_string())?;
+        let expected = match expected_sha256 {
+            Some(expected) => {
+                let normalized = expected
+                    .trim()
+                    .strip_prefix("sha256:")
+                    .unwrap_or(expected.trim());
+                if !normalized.eq_ignore_ascii_case(&model.sha256) {
+                    return Err("El checksum no corresponde a un modelo del catálogo".into());
+                }
+                model.sha256
+            }
+            None => model.sha256,
+        };
+        validate_model_checksum(&path, &expected)
+    })
+    .await
+    .map_err(|_| "La validación del modelo terminó inesperadamente".to_string())?
 }
 
 #[tauri::command]
@@ -2025,6 +2083,24 @@ mod tests {
 
         assert!(cache.is_ready_for_model("base"));
         assert!(!cache.is_ready_for_model("small"));
+    }
+
+    #[test]
+    fn settings_model_id_does_not_mark_model_active_without_a_validated_context() {
+        let status = model_status("small").expect("inspect model status");
+
+        assert!(!status.active);
+    }
+
+    #[test]
+    fn stale_model_load_cannot_replace_a_newer_cached_activation() {
+        let mut cache = CachedWhisperContext::default();
+        let stale_generation = cache.load_generation_for_test();
+        cache.mark_ready_for_test("small");
+
+        assert!(!cache.commit_test_context_for_generation("base", stale_generation));
+        assert!(cache.is_ready_for_model("small"));
+        assert!(!cache.is_ready_for_model("base"));
     }
 
     #[test]

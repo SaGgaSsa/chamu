@@ -425,6 +425,14 @@ pub struct LocalModel {
 }
 
 pub fn discover_models_in_dirs(directories: &[PathBuf]) -> Result<Vec<LocalModel>, String> {
+    let canonical_directories = directories
+        .iter()
+        .filter_map(|directory| match fs::canonicalize(directory) {
+            Ok(directory) => Some(Ok(directory)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => Some(Err(error.to_string())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut seen = BTreeSet::new();
     let mut models = Vec::new();
     for directory in directories {
@@ -443,24 +451,26 @@ pub fn discover_models_in_dirs(directories: &[PathBuf]) -> Result<Vec<LocalModel
                 Some(filename) if filename.starts_with("ggml-") => filename.to_string(),
                 _ => continue,
             };
-            let canonical = fs::canonicalize(&path).unwrap_or(path.clone());
+            let canonical = match fs::canonicalize(&path) {
+                Ok(path) => path,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            if !canonical_path_is_allowed(&canonical, &canonical_directories) {
+                continue;
+            }
             if !seen.insert(canonical.clone()) {
                 continue;
             }
+            let Some(known) = model_metadata_for_filename(&filename) else {
+                continue;
+            };
             let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
             let actual = sha256_file(&canonical)?;
-            let known = model_metadata_for_filename(&filename);
-            if known.is_none() {
-                continue;
-            }
-            let expected = known.as_ref().map(|model| model.sha256.clone());
+            let expected = Some(known.sha256.clone());
             let is_valid = expected.as_ref().map(|value| value == &actual);
-            let id = known
-                .as_ref()
-                .map(|model| model.id.clone())
-                .unwrap_or_else(|| filename.trim_start_matches("ggml-").trim_end_matches(".bin").to_string());
             models.push(LocalModel {
-                id,
+                id: known.id,
                 filename,
                 path: canonical.to_string_lossy().into_owned(),
                 size_bytes: metadata.len(),
@@ -472,6 +482,12 @@ pub fn discover_models_in_dirs(directories: &[PathBuf]) -> Result<Vec<LocalModel
     }
     models.sort_by(|left, right| left.filename.cmp(&right.filename));
     Ok(models)
+}
+
+fn canonical_path_is_allowed(path: &Path, directories: &[PathBuf]) -> bool {
+    directories
+        .iter()
+        .any(|directory| path.starts_with(directory))
 }
 
 #[derive(Debug, Clone)]
@@ -524,17 +540,15 @@ pub fn app_storage_paths() -> Result<AppStoragePaths, String> {
 
 pub fn is_model_path_allowed(path: &Path, directories: &[PathBuf]) -> Result<bool, String> {
     let canonical_path = fs::canonicalize(path).map_err(|error| error.to_string())?;
-    for directory in directories {
-        let canonical_directory = match fs::canonicalize(directory) {
-            Ok(directory) => directory,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.to_string()),
-        };
-        if canonical_path.starts_with(canonical_directory) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let canonical_directories = directories
+        .iter()
+        .filter_map(|directory| match fs::canonicalize(directory) {
+            Ok(directory) => Some(Ok(directory)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => Some(Err(error.to_string())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(canonical_path_is_allowed(&canonical_path, &canonical_directories))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1299,6 +1313,38 @@ mod tests {
         assert_eq!(models[0].id, "base");
         assert_eq!(models[0].expected_sha256.as_deref(), Some(MODEL_BASE_SHA256));
         assert_eq!(models[0].is_valid, Some(false));
+    }
+
+    #[test]
+    fn model_discovery_rejects_a_model_outside_all_allowed_directories() {
+        let root = test_root("discovery-policy");
+        let allowed = root.join("allowed");
+        let outside = root.join("outside");
+        fs::create_dir_all(&allowed).expect("create allowed directory");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        let outside_model = outside.join("ggml-base.bin");
+        fs::write(&outside_model, b"outside model").expect("write outside model");
+
+        assert!(!is_model_path_allowed(&outside_model, &[allowed]).expect("check policy"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_discovery_ignores_a_symlink_to_a_model_outside_allowed_directories() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("discovery-symlink");
+        let allowed = root.join("allowed");
+        let outside = root.join("outside");
+        fs::create_dir_all(&allowed).expect("create allowed directory");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        let outside_model = outside.join("ggml-base.bin");
+        fs::write(&outside_model, b"outside model").expect("write outside model");
+        symlink(&outside_model, allowed.join("ggml-base.bin")).expect("create model symlink");
+
+        let models = discover_models_in_dirs(&[allowed]).expect("discover models");
+
+        assert!(models.is_empty());
     }
 
     #[test]
