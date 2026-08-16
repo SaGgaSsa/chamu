@@ -148,7 +148,7 @@ describe("OnboardingFlow", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Descargando modelo · 50%");
   });
 
-  it("allows cancelling a model download and shows the cancellation message", async () => {
+  it("allows cancelling a model download without reopening the consent dialog", async () => {
     const missing: ModelStatus = {
       id: "base",
       name: "Whisper base",
@@ -185,6 +185,7 @@ describe("OnboardingFlow", () => {
       });
     });
     expect((await screen.findAllByText(/descarga cancelada/i))[0]).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: /confirmar descarga del modelo/i })).toBeNull();
   });
 
   it("downloads and activates a different selected profile before continuing", async () => {

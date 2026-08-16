@@ -269,6 +269,7 @@ export function OnboardingFlow({
     if (progress.phase === "cancelled") {
       releaseProgressListener(token);
       setDownloadingModelId(null);
+      setDownloadConsentId(null);
       setModelErrors((current) => ({ ...current, [modelId]: progress.message }));
       return;
     }
@@ -323,6 +324,7 @@ export function OnboardingFlow({
     const expectedBridge = bridgeRef.current;
     const generation = bridgeGenerationRef.current;
     const modelId = downloadingModelId;
+    setDownloadConsentId(null);
     try {
       await expectedBridge.cancelModelDownload(modelId);
     } catch (error: unknown) {
