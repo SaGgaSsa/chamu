@@ -58,6 +58,13 @@ function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
   };
 }
 
+function makeQuietBridge(): ChamuBridge {
+  return makeBridge({
+    getModelCatalog: vi.fn(() => new Promise<ModelMetadata[]>(() => undefined)),
+    getMicrophoneInfo: undefined,
+  });
+}
+
 function makeWaylandBridge() {
   let emit: ((event: WaylandHoldShortcutEvent) => void) | undefined;
   const unlisten = vi.fn();
@@ -99,7 +106,7 @@ function makeWaylandBridge() {
 
 describe("AppShell", () => {
   it("shows the local Spanish shell and ready status by default", () => {
-    render(<AppShell />);
+    render(<AppShell bridge={makeQuietBridge()} />);
 
     expect(screen.getByRole("heading", { name: "Chamu" })).toBeVisible();
     expect(screen.getByText("Tu voz, en tus manos")).toBeVisible();
@@ -108,7 +115,7 @@ describe("AppShell", () => {
   });
 
   it("renders a status-aware microphone icon with the existing accessible name", () => {
-    render(<AppShell recordingState={{ status: "ready" }} />);
+    render(<AppShell bridge={makeQuietBridge()} recordingState={{ status: "ready" }} />);
 
     const control = screen.getByRole("button", { name: "Comenzar dictado" });
     expect(control).toHaveAttribute("data-status", "ready");
@@ -116,36 +123,37 @@ describe("AppShell", () => {
   });
 
   it("shows REC while recording", () => {
-    render(<AppShell recordingState={{ status: "recording" }} />);
+    render(<AppShell bridge={makeQuietBridge()} recordingState={{ status: "recording" }} />);
 
     const control = screen.getByRole("button", { name: "Terminar dictado" });
     expect(control).toHaveTextContent("REC");
   });
 
   it("disables the dictation control while transcribing", () => {
-    render(<AppShell recordingState={{ status: "transcribing" }} />);
+    render(<AppShell bridge={makeQuietBridge()} recordingState={{ status: "transcribing" }} />);
 
     expect(screen.getByRole("button", { name: "Transcribiendo…" })).toBeDisabled();
   });
 
   it("renders the decorative waveform only while recording", () => {
-    const { rerender } = render(<AppShell recordingState={{ status: "ready" }} />);
+    const bridge = makeQuietBridge();
+    const { rerender } = render(<AppShell bridge={bridge} recordingState={{ status: "ready" }} />);
 
     expect(screen.queryByTestId("dictation-waveform")).not.toBeInTheDocument();
 
-    rerender(<AppShell recordingState={{ status: "recording" }} />);
+    rerender(<AppShell bridge={bridge} recordingState={{ status: "recording" }} />);
     expect(screen.getByTestId("dictation-waveform")).toBeInTheDocument();
 
     const control = screen.getByRole("button", { name: "Terminar dictado" });
     expect(control.querySelector(".dictation-control__pulse")).toBeInTheDocument();
     expect(control.querySelector("animate")).not.toBeInTheDocument();
 
-    rerender(<AppShell recordingState={{ status: "copied" }} />);
+    rerender(<AppShell bridge={bridge} recordingState={{ status: "copied" }} />);
     expect(screen.queryByTestId("dictation-waveform")).not.toBeInTheDocument();
   });
 
   it("renders a visible pulse circle while recording", () => {
-    render(<AppShell recordingState={{ status: "recording" }} />);
+    render(<AppShell bridge={makeQuietBridge()} recordingState={{ status: "recording" }} />);
 
     const pulseCircle = screen
       .getByRole("button", { name: "Terminar dictado" })
@@ -156,7 +164,7 @@ describe("AppShell", () => {
   });
 
   it("renders the active recording status from state", () => {
-    render(<AppShell recordingState={{ status: "recording" }} />);
+    render(<AppShell bridge={makeQuietBridge()} recordingState={{ status: "recording" }} />);
 
     expect(screen.getAllByRole("status")[0]).toHaveTextContent("Grabando");
     expect(screen.getByText("Suelta el atajo para terminar")).toBeVisible();
@@ -165,6 +173,7 @@ describe("AppShell", () => {
   it("renders an error message without exposing audio controls", () => {
     render(
       <AppShell
+        bridge={makeQuietBridge()}
         recordingState={{
           status: "error",
           message: "No se encontró un micrófono",

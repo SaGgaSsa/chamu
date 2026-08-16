@@ -65,6 +65,19 @@ describe("ModelSelector", () => {
     expect(screen.getByText(/Calidad.*547 MiB/i)).toBeVisible();
   });
 
+  it("keeps all three profiles visible when the catalog is incomplete", async () => {
+    const bridge = makeBridge({
+      getModelCatalog: vi.fn(async () => catalog.slice(0, 1)),
+    });
+
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+
+    expect(await screen.findByRole("radio", { name: /liviano/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /calidad/i })).toBeVisible();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/catálogo.*incompleto/i);
+  });
+
   it("activates an installed valid profile only after the bridge resolves", async () => {
     let resolveActivation: (() => void) | undefined;
     const bridge = makeBridge({
@@ -128,5 +141,140 @@ describe("ModelSelector", () => {
     });
     expect(screen.getByText(/descargando modelo.*10%/i)).toBeVisible();
     expect(screen.queryByRole("button", { name: /activar/i })).toBeNull();
+  });
+
+  it("refreshes the profile that completed its download", async () => {
+    let progressListener: ((progress: ModelDownloadProgress) => void) | undefined;
+    let largeInspectionCount = 0;
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async (modelId = "small") => {
+        if (modelId === "large-v3-turbo-q5_0") {
+          largeInspectionCount += 1;
+          return status(modelId, {
+            installed: largeInspectionCount > 1,
+            checksumValid: largeInspectionCount > 1,
+            active: false,
+          });
+        }
+        return status(modelId);
+      }),
+      onModelDownloadProgress: vi.fn(async (listener) => {
+        progressListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("radio", { name: /calidad/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /descargar modelo calidad/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirmar descarga/i }));
+    await waitFor(() => expect(bridge.startModelDownload).toHaveBeenCalledWith("large-v3-turbo-q5_0"));
+
+    await act(async () => {
+      progressListener?.({
+        modelId: "large-v3-turbo-q5_0",
+        phase: "completed",
+        downloadedBytes: 547,
+        totalBytes: 547,
+        percent: 100,
+        message: "Descarga completada",
+      });
+    });
+
+    await waitFor(() => expect(bridge.inspectModel).toHaveBeenCalledWith("large-v3-turbo-q5_0"));
+    await waitFor(() => expect(screen.getByText("Instalado y validado")).toBeVisible());
+    expect(largeInspectionCount).toBeGreaterThan(1);
+  });
+
+  it("shows checksum and status errors from inspection", async () => {
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async (modelId = "small") => status(modelId, modelId === "base"
+        ? { installed: true, checksumValid: false }
+        : { error: "No se pudo comprobar el archivo" })),
+    });
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("Checksum inválido")).toBeVisible());
+    expect(screen.getAllByText("Error: No se pudo comprobar el archivo")[0]).toBeVisible();
+  });
+
+  it("preserves the previous active profile when activation fails", async () => {
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async (modelId = "small") => status(modelId, {
+        installed: true,
+        checksumValid: true,
+        active: modelId === "small",
+      })),
+      activateModel: vi.fn(async () => {
+        throw new Error("No se pudo activar el modelo");
+      }),
+    });
+    const onModelActivated = vi.fn();
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={onModelActivated} />);
+
+    const previous = await screen.findByRole("radio", { name: /predeterminado/i });
+    const candidate = screen.getByRole("radio", { name: /liviano/i });
+    fireEvent.click(candidate);
+
+    await waitFor(() => expect(screen.getByText("No se pudo activar el modelo")).toBeVisible());
+    expect(previous).toBeChecked();
+    expect(candidate).not.toBeChecked();
+    expect(screen.getByText("Activo · instalado y validado")).toBeVisible();
+    expect(onModelActivated).not.toHaveBeenCalled();
+  });
+
+  it("ignores a catalog response from a previous bridge", async () => {
+    let resolveOldCatalog: ((value: ModelMetadata[]) => void) | undefined;
+    const oldCatalog = new Promise<ModelMetadata[]>((resolve) => {
+      resolveOldCatalog = resolve;
+    });
+    const oldBridge = makeBridge({ getModelCatalog: vi.fn(() => oldCatalog) });
+    const newBridge = makeBridge();
+    const rendered = render(
+      <ModelSelector bridge={oldBridge} selectedModelId="small" onModelActivated={vi.fn()} />,
+    );
+
+    rendered.rerender(<ModelSelector bridge={newBridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+    expect(await screen.findByRole("radio", { name: /calidad/i })).toBeVisible();
+
+    await act(async () => {
+      resolveOldCatalog?.([]);
+    });
+
+    expect(screen.getByRole("radio", { name: /liviano/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /calidad/i })).toBeVisible();
+  });
+
+  it("ignores an inspection response from a previous bridge", async () => {
+    const oldResolvers: Record<string, (value: ModelStatus) => void> = {};
+    const oldBridge = makeBridge({
+      inspectModel: vi.fn((modelId = "small") => new Promise<ModelStatus>((resolve) => {
+        oldResolvers[modelId] = resolve;
+      })),
+    });
+    const newBridge = makeBridge({
+      inspectModel: vi.fn(async (modelId = "small") => status(modelId, {
+        installed: true,
+        checksumValid: true,
+        active: modelId === "small",
+      })),
+    });
+    const rendered = render(
+      <ModelSelector bridge={oldBridge} selectedModelId="small" onModelActivated={vi.fn()} />,
+    );
+
+    await waitFor(() => expect(Object.keys(oldResolvers)).toHaveLength(3));
+    rendered.rerender(<ModelSelector bridge={newBridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Activo · instalado y validado")).toBeVisible());
+
+    await act(async () => {
+      Object.values(oldResolvers).forEach((resolve) => resolve(status("small", {
+        error: "Respuesta antigua",
+      })));
+    });
+
+    expect(screen.queryByText(/respuesta antigua/i)).toBeNull();
+    expect(screen.getByText("Activo · instalado y validado")).toBeVisible();
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   ChamuBridge,
   ModelDownloadProgress,
@@ -44,6 +44,12 @@ function metadataFor(profile: ModelProfile, catalog: readonly ModelMetadata[]): 
   return catalog.find((metadata) => metadata.id === profile.id);
 }
 
+function missingProfileLabels(catalog: readonly ModelMetadata[]): string[] {
+  return MODEL_PROFILES
+    .filter((profile) => metadataFor(profile, catalog) === undefined)
+    .map((profile) => profile.label);
+}
+
 function statusIsReady(status: ModelStatus | undefined): boolean {
   return Boolean(status?.installed && status.checksumValid);
 }
@@ -61,8 +67,12 @@ function statusLabel(
   }
   if (statusError) return `Error: ${statusError}`;
   if (!status) return "Comprobando estado…";
+  if (status.error) {
+    return status.installed && !status.checksumValid
+      ? `Checksum inválido · Error: ${status.error}`
+      : `Error: ${status.error}`;
+  }
   if (status.installed && !status.checksumValid) return "Checksum inválido";
-  if (status.error) return `Error: ${status.error}`;
   if (status.installed && status.checksumValid) {
     return status.active ? "Activo · instalado y validado" : "Instalado y validado";
   }
@@ -82,6 +92,8 @@ export function ModelSelector({
   const [statusErrors, setStatusErrors] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState(selectedModelId);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogValidationError, setCatalogValidationError] = useState<string | null>(null);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [downloadId, setDownloadId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [downloadConsentId, setDownloadConsentId] = useState<string | null>(null);
@@ -91,6 +103,8 @@ export function ModelSelector({
   const downloadTokenRef = useRef<symbol | null>(null);
   const confirmedIdRef = useRef(selectedModelId);
   const disposedRef = useRef(false);
+  const bridgeRef = useRef(bridge);
+  const bridgeGenerationRef = useRef(0);
 
   useEffect(() => {
     setSelectedId(selectedModelId);
@@ -109,6 +123,12 @@ export function ModelSelector({
     }
   }
 
+  function isCurrentBridge(expectedBridge: ChamuBridge, generation: number): boolean {
+    return !disposedRef.current
+      && bridgeRef.current === expectedBridge
+      && bridgeGenerationRef.current === generation;
+  }
+
   useEffect(() => {
     disposedRef.current = false;
     return () => {
@@ -117,10 +137,14 @@ export function ModelSelector({
     };
   }, []);
 
-  async function inspectProfile(id: string): Promise<void> {
+  async function inspectProfile(
+    id: string,
+    expectedBridge = bridgeRef.current,
+    generation = bridgeGenerationRef.current,
+  ): Promise<void> {
     try {
-      const status = await bridge.inspectModel(id);
-      if (disposedRef.current) return;
+      const status = await expectedBridge.inspectModel(id);
+      if (!isCurrentBridge(expectedBridge, generation)) return;
       setStatuses((current) => ({ ...current, [id]: status }));
       setStatusErrors((current) => {
         if (!(id in current)) return current;
@@ -129,7 +153,7 @@ export function ModelSelector({
         return next;
       });
     } catch (error: unknown) {
-      if (disposedRef.current) return;
+      if (!isCurrentBridge(expectedBridge, generation)) return;
       setStatusErrors((current) => ({
         ...current,
         [id]: getErrorMessage(error, "No se pudo comprobar el modelo"),
@@ -137,31 +161,89 @@ export function ModelSelector({
     }
   }
 
-  async function loadModels() {
-    setCatalogError(null);
-    try {
-      const loadedCatalog = await bridge.getModelCatalog();
-      if (disposedRef.current) return;
-      const knownCatalog = MODEL_PROFILES
-        .map((profile) => metadataFor(profile, loadedCatalog))
-        .filter((metadata): metadata is ModelMetadata => metadata !== undefined);
-      setCatalog(knownCatalog);
-      await Promise.all(MODEL_PROFILES.map((profile) => inspectProfile(profile.id)));
-    } catch (error: unknown) {
-      if (disposedRef.current) return;
-      setCatalogError(getErrorMessage(error, "No se pudo cargar el catálogo de modelos"));
-    }
-  }
-
   useEffect(() => {
-    void loadModels();
+    const expectedBridge = bridge;
+    const generation = bridgeGenerationRef.current + 1;
+    bridgeGenerationRef.current = generation;
+    bridgeRef.current = expectedBridge;
+    let cancelled = false;
+
+    setCatalog([]);
+    setCatalogLoaded(false);
+    setCatalogError(null);
+    setCatalogValidationError(null);
+    setStatuses({});
+    setStatusErrors({});
+    setDownloadId(null);
+    setDownloadProgress(null);
+    setDownloadConsentId(null);
+    setActivatingId(null);
+    setOperationError(null);
+
+    function isCurrent(): boolean {
+      return !cancelled && isCurrentBridge(expectedBridge, generation);
+    }
+
+    async function inspectForGeneration(id: string): Promise<void> {
+      try {
+        const status = await expectedBridge.inspectModel(id);
+        if (!isCurrent()) return;
+        setStatuses((current) => ({ ...current, [id]: status }));
+        setStatusErrors((current) => {
+          if (!(id in current)) return current;
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+      } catch (error: unknown) {
+        if (!isCurrent()) return;
+        setStatusErrors((current) => ({
+          ...current,
+          [id]: getErrorMessage(error, "No se pudo comprobar el modelo"),
+        }));
+      }
+    }
+
+    void expectedBridge.getModelCatalog().then(async (loadedCatalog) => {
+      if (!isCurrent()) return;
+      setCatalog(loadedCatalog);
+      setCatalogLoaded(true);
+      const missing = missingProfileLabels(loadedCatalog);
+      setCatalogValidationError(
+        missing.length > 0
+          ? `El catálogo de modelos está incompleto. Falta: ${missing.join(", ")}.`
+          : null,
+      );
+      await Promise.all(MODEL_PROFILES.map((profile) => inspectForGeneration(profile.id)));
+    }).catch((error: unknown) => {
+      if (!isCurrent()) return;
+      setCatalogLoaded(true);
+      setCatalogError(getErrorMessage(error, "No se pudo cargar el catálogo de modelos"));
+    });
+
+    return () => {
+      cancelled = true;
+      releaseDownloadListener();
+      if (bridgeGenerationRef.current === generation) bridgeGenerationRef.current += 1;
+    };
   }, [bridge]);
 
-  async function refreshProfile(id: string) {
-    await inspectProfile(id);
+  async function refreshProfile(
+    id: string,
+    expectedBridge = bridgeRef.current,
+    generation = bridgeGenerationRef.current,
+  ) {
+    await inspectProfile(id, expectedBridge, generation);
   }
 
-  async function handleDownloadProgress(progress: ModelDownloadProgress, token: symbol, id: string) {
+  async function handleDownloadProgress(
+    progress: ModelDownloadProgress,
+    token: symbol,
+    id: string,
+    expectedBridge: ChamuBridge,
+    generation: number,
+  ) {
+    if (!isCurrentBridge(expectedBridge, generation)) return;
     if (downloadListenerRef.current?.token !== token || progress.modelId !== id) return;
     setDownloadProgress(progress);
     if (progress.phase === "failed" || progress.phase === "cancelled") {
@@ -175,13 +257,16 @@ export function ModelSelector({
       releaseDownloadListener(token);
       setDownloadId(null);
       setDownloadConsentId(null);
-      await refreshProfile(progress.modelId);
+      await refreshProfile(progress.modelId, expectedBridge, generation);
     }
   }
 
   async function confirmDownload() {
     const id = downloadConsentId;
     if (!id || disabled || downloadId !== null || activatingId !== null) return;
+
+    const expectedBridge = bridgeRef.current;
+    const generation = bridgeGenerationRef.current;
 
     setOperationError(null);
     setStatusErrors((current) => {
@@ -198,17 +283,17 @@ export function ModelSelector({
     setDownloadId(id);
 
     try {
-      const unlisten = await bridge.onModelDownloadProgress((progress) => {
-        void handleDownloadProgress(progress, token, id);
+      const unlisten = await expectedBridge.onModelDownloadProgress((progress) => {
+        void handleDownloadProgress(progress, token, id, expectedBridge, generation);
       });
-      if (disposedRef.current || downloadListenerRef.current?.token !== token) {
+      if (!isCurrentBridge(expectedBridge, generation) || downloadListenerRef.current?.token !== token) {
         unlisten();
         return;
       }
       downloadListenerRef.current.unlisten = unlisten;
-      await bridge.startModelDownload(id);
+      await expectedBridge.startModelDownload(id);
     } catch (error: unknown) {
-      if (downloadListenerRef.current?.token !== token) return;
+      if (!isCurrentBridge(expectedBridge, generation) || downloadListenerRef.current?.token !== token) return;
       releaseDownloadListener(token);
       setDownloadId(null);
       setDownloadConsentId(null);
@@ -221,18 +306,24 @@ export function ModelSelector({
 
   async function cancelDownload() {
     if (!downloadId) return;
+    const expectedBridge = bridgeRef.current;
+    const generation = bridgeGenerationRef.current;
+    const id = downloadId;
     try {
-      await bridge.cancelModelDownload(downloadId);
+      await expectedBridge.cancelModelDownload(id);
     } catch (error: unknown) {
+      if (!isCurrentBridge(expectedBridge, generation) || downloadId !== id) return;
       setStatusErrors((current) => ({
         ...current,
-        [downloadId]: getErrorMessage(error, "No se pudo cancelar la descarga"),
+        [id]: getErrorMessage(error, "No se pudo cancelar la descarga"),
       }));
     }
   }
 
   async function activate(id: string) {
     if (disabled || downloadId !== null || activatingId !== null) return;
+    const expectedBridge = bridgeRef.current;
+    const generation = bridgeGenerationRef.current;
     const previousId = confirmedIdRef.current;
     setActivatingId(id);
     setOperationError(null);
@@ -243,8 +334,8 @@ export function ModelSelector({
       return next;
     });
     try {
-      await bridge.activateModel(id);
-      if (disposedRef.current) return;
+      await expectedBridge.activateModel(id);
+      if (!isCurrentBridge(expectedBridge, generation)) return;
       setStatuses((current) => Object.fromEntries(
         Object.entries(current).map(([statusId, status]) => [
           statusId,
@@ -255,7 +346,7 @@ export function ModelSelector({
       setSelectedId(id);
       onModelActivated(id);
     } catch (error: unknown) {
-      if (disposedRef.current) return;
+      if (!isCurrentBridge(expectedBridge, generation)) return;
       setSelectedId(previousId);
       setStatusErrors((current) => ({
         ...current,
@@ -263,7 +354,7 @@ export function ModelSelector({
       }));
       setOperationError(getErrorMessage(error, "No se pudo activar el modelo"));
     } finally {
-      if (!disposedRef.current) setActivatingId(null);
+      if (isCurrentBridge(expectedBridge, generation)) setActivatingId(null);
     }
   }
 
@@ -284,10 +375,6 @@ export function ModelSelector({
     }
   }
 
-  const profiles = useMemo(
-    () => MODEL_PROFILES.filter((profile) => metadataFor(profile, catalog) !== undefined),
-    [catalog],
-  );
   const selectedProfile = profileFor(selectedId);
   const selectedStatus = statuses[selectedId];
   const selectorBusy = disabled || downloadId !== null || activatingId !== null;
@@ -305,11 +392,11 @@ export function ModelSelector({
         {selectedActive && <span className="model-selector__active">Activo</span>}
       </div>
       {catalogError && <p className="error-message" role="alert">{catalogError}</p>}
-      {!catalogError && profiles.length === 0 && <p className="model-selector__loading" role="status">Cargando modelos…</p>}
-      {profiles.length > 0 && (
-        <fieldset className="choice-list model-selector__choices" disabled={selectorBusy}>
-          <legend>Perfil de Whisper</legend>
-          {profiles.map((profile) => {
+      {catalogValidationError && <p className="error-message" role="alert">{catalogValidationError}</p>}
+      {!catalogLoaded && <p className="model-selector__loading" role="status">Cargando catálogo de modelos…</p>}
+      <fieldset className="choice-list model-selector__choices" disabled={selectorBusy}>
+        <legend>Perfil de Whisper</legend>
+        {MODEL_PROFILES.map((profile) => {
             const status = statuses[profile.id];
             return (
               <label className="choice-card model-selector__choice" key={profile.id}>
@@ -330,8 +417,7 @@ export function ModelSelector({
               </label>
             );
           })}
-        </fieldset>
-      )}
+      </fieldset>
       {disabled && <p className="model-selector__message" role="status">Selector bloqueado mientras Chamu procesa el dictado.</p>}
       {downloadId && (
         <div className="download-panel model-selector__download" role="status">
