@@ -1,0 +1,6 @@
+{
+  "uuid": "chamu@chamu.app",
+  "name": "Chamu Paste",
+  "description": "Provides a D-Bus action to paste into the focused application.",
+  "shell-version": ["46", "47", "48", "49", "50"]
+}

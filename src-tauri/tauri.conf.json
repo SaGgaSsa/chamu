@@ -28,6 +28,7 @@
   },
   "bundle": {
     "active": true,
+    "resources": ["resources/chamu@chamu.app"],
     "targets": ["nsis", "appimage", "deb"],
     "linux": {
       "deb": {
