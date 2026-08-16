@@ -45,6 +45,7 @@ struct RuntimeState {
     wayland_shortcut_lifecycle: Mutex<wayland_shortcut::ShortcutLifecycleState>,
     wayland_shortcut_cleanup: Arc<Mutex<wayland_shortcut::ShortcutCleanupState>>,
     whisper_context: Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_activation: tauri::async_runtime::Mutex<()>,
 }
 
 static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -55,8 +56,10 @@ static DOWNLOAD_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
 struct ModelStatus {
     id: String,
     name: String,
+    label: String,
     installed: bool,
     checksum_valid: bool,
+    active: bool,
     #[serde(rename = "sizeMiB")]
     size_mib: f64,
     progress: Option<u8>,
@@ -175,6 +178,7 @@ impl Default for RuntimeState {
                 Mutex::new(CachedWhisperContext::default()),
                 Condvar::new(),
             )),
+            model_activation: tauri::async_runtime::Mutex::new(()),
         }
     }
 }
@@ -182,9 +186,12 @@ impl Default for RuntimeState {
 #[derive(Default)]
 struct CachedWhisperContext {
     context: Option<Arc<WhisperContext>>,
+    model_id: Option<String>,
     loading: bool,
     #[cfg(test)]
     test_ready: bool,
+    #[cfg(test)]
+    test_model_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -193,15 +200,23 @@ impl CachedWhisperContext {
         self.context.is_some() || self.test_ready
     }
 
-    fn mark_ready_for_test(&mut self) {
+    fn mark_ready_for_test(&mut self, model_id: &str) {
         self.loading = false;
         self.test_ready = true;
+        self.test_model_id = Some(model_id.into());
     }
 
     fn mark_failed_for_test(&mut self) {
         self.context = None;
+        self.model_id = None;
         self.loading = false;
         self.test_ready = false;
+        self.test_model_id = None;
+    }
+
+    fn is_ready_for_model(&self, model_id: &str) -> bool {
+        (self.context.is_some() && self.model_id.as_deref() == Some(model_id))
+            || (self.test_ready && self.test_model_id.as_deref() == Some(model_id))
     }
 }
 
@@ -217,16 +232,22 @@ fn diagnostics_path() -> Result<PathBuf, String> {
     Ok(app_storage_paths()?.data_dir.join("diagnostics.jsonl"))
 }
 
-fn model_status(model_id: &str) -> Result<ModelStatus, String> {
+fn model_status(model_id: &str, active_model_id: Option<&str>) -> Result<ModelStatus, String> {
     let metadata = model_catalog()
         .into_iter()
         .find(|model| model.id == model_id)
         .ok_or_else(|| "Modelo no disponible".to_string())?;
     let mut status = ModelStatus {
         id: metadata.id.clone(),
-        name: "Whisper base multilingüe".into(),
+        name: if metadata.id == "base" {
+            "Whisper base multilingüe".into()
+        } else {
+            format!("Whisper {}", metadata.id)
+        },
+        label: metadata.label.clone(),
         installed: false,
         checksum_valid: false,
+        active: active_model_id == Some(metadata.id.as_str()),
         size_mib: metadata.size_bytes as f64 / (1024.0 * 1024.0),
         progress: None,
         error: None,
@@ -256,6 +277,26 @@ fn model_install_path(model: &core::ModelMetadata) -> Result<PathBuf, String> {
         .ok_or_else(|| "No se encontró un directorio para modelos".to_string())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     Ok(directory.join(&model.filename))
+}
+
+fn model_metadata(model_id: &str) -> Result<core::ModelMetadata, String> {
+    model_catalog()
+        .into_iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "Modelo no disponible".to_string())
+}
+
+fn installed_model_path(model_id: &str) -> Result<(core::ModelMetadata, PathBuf), String> {
+    let model = model_metadata(model_id)?;
+    let paths = app_storage_paths()?;
+    let local = discover_models_in_dirs(&paths.model_dirs)?
+        .into_iter()
+        .find(|local| local.id == model_id)
+        .ok_or_else(|| "El modelo no está instalado".to_string())?;
+    if local.is_valid != Some(true) {
+        return Err("El checksum SHA-256 del modelo no coincide".into());
+    }
+    Ok((model, PathBuf::from(local.path)))
 }
 
 fn model_download_temp_path(destination: &Path) -> PathBuf {
@@ -461,6 +502,7 @@ fn load_validated_whisper_context(
 
 fn load_or_reuse_whisper_context(
     cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_id: &str,
     model_path: &Path,
     expected_sha256: &str,
 ) -> Result<Arc<WhisperContext>, String> {
@@ -470,7 +512,13 @@ fn load_or_reuse_whisper_context(
             .lock()
             .map_err(|_| "No se pudo acceder a la caché del modelo".to_string())?;
         if let Some(context) = cached.context.as_ref() {
-            return Ok(Arc::clone(context));
+            if cached.model_id.as_deref() == Some(model_id) {
+                return Ok(Arc::clone(context));
+            }
+        }
+        #[cfg(test)]
+        if cached.is_ready_for_model(model_id) && cached.context.is_none() {
+            return Err("La caché de prueba no contiene un contexto Whisper real".into());
         }
         if cached.loading {
             cached = cache_ready
@@ -489,27 +537,96 @@ fn load_or_reuse_whisper_context(
         cached.loading = false;
         if let Ok(context) = &result {
             cached.context = Some(Arc::clone(context));
+            cached.model_id = Some(model_id.to_string());
+            #[cfg(test)]
+            {
+                cached.test_ready = false;
+                cached.test_model_id = None;
+            }
         }
         cache_ready.notify_all();
         return result;
     }
 }
 
+/// Prepares a verified context without changing the active cache entry.
+///
+/// Activation uses this two-phase operation so a failed persistence step cannot
+/// discard the previously active context. The cache's loading flag still
+/// serializes this preparation with transcription loads.
+fn prepare_whisper_context(
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_id: &str,
+    model_path: &Path,
+    expected_sha256: &str,
+) -> Result<Arc<WhisperContext>, String> {
+    loop {
+        let (cache_lock, cache_ready) = &**cache;
+        let mut cached = cache_lock
+            .lock()
+            .map_err(|_| "No se pudo acceder a la caché del modelo".to_string())?;
+        if let Some(context) = cached.context.as_ref() {
+            if cached.model_id.as_deref() == Some(model_id) {
+                return Ok(Arc::clone(context));
+            }
+        }
+        if cached.loading {
+            cached = cache_ready
+                .wait(cached)
+                .map_err(|_| "No se pudo esperar la carga del modelo".to_string())?;
+            drop(cached);
+            continue;
+        }
+        cached.loading = true;
+        drop(cached);
+
+        let result = load_validated_whisper_context(model_path, expected_sha256);
+        let mut cached = cache_lock
+            .lock()
+            .map_err(|_| "No se pudo actualizar la caché del modelo".to_string())?;
+        cached.loading = false;
+        cache_ready.notify_all();
+        return result;
+    }
+}
+
+fn replace_cached_whisper_context(
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_id: &str,
+    context: Arc<WhisperContext>,
+) -> Result<(), String> {
+    let (cache_lock, cache_ready) = &**cache;
+    let mut cached = cache_lock
+        .lock()
+        .map_err(|_| "No se pudo actualizar la caché del modelo".to_string())?;
+    cached.context = Some(context);
+    cached.model_id = Some(model_id.to_string());
+    cached.loading = false;
+    #[cfg(test)]
+    {
+        cached.test_ready = false;
+        cached.test_model_id = None;
+    }
+    cache_ready.notify_all();
+    Ok(())
+}
+
 /// Loads the installed model outside the UI thread. A missing model is normal
 /// during onboarding, so it does not prevent the application from starting.
 fn warm_whisper_context(
     cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+    model_id: &str,
 ) -> Result<(), String> {
-    let model = model_catalog()
+    let model = model_metadata(model_id)?;
+    let paths = app_storage_paths()?;
+    let local = discover_models_in_dirs(&paths.model_dirs)?
         .into_iter()
-        .find(|model| model.id == "base")
-        .ok_or_else(|| "No se encontró el modelo base".to_string())?;
-    let model_path = model_install_path(&model)?;
-    if !model_path.is_file() {
+        .find(|local| local.id == model_id);
+    let Some(local) = local else {
         return Ok(());
-    }
-
-    load_or_reuse_whisper_context(cache, &model_path, &model.sha256).map(|_| ())
+    };
+    load_or_reuse_whisper_context(cache, model_id, Path::new(&local.path), &model.sha256)
+        .map(|_| ())
 }
 
 /// Runs whisper.cpp in-process. The context is a verified local model shared
@@ -556,6 +673,7 @@ fn transcribe_with_embedded_whisper(
 }
 
 struct TranscriptionWork {
+    model_id: String,
     model_path: PathBuf,
     language: String,
     samples: Vec<i16>,
@@ -605,6 +723,15 @@ fn get_settings(state: State<'_, RuntimeState>) -> Result<AppSettings, String> {
 #[tauri::command]
 fn set_settings(settings: AppSettings, state: State<'_, RuntimeState>) -> Result<(), String> {
     validate_settings(&settings)?;
+    let active_model_id = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración actual".to_string())?
+        .model_id
+        .clone();
+    if settings.model_id != active_model_id {
+        return Err("El modelo se cambia con activate_model".into());
+    }
     save_settings_file(&settings_path()?, &settings)?;
     *state
         .settings
@@ -672,22 +799,19 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
             .ok_or_else(|| "No hay un dictado en curso".to_string())?;
         capture_extracted = true;
 
-        let model = model_catalog()
-            .into_iter()
-            .find(|model| model.id == "base")
-            .ok_or_else(|| "No se encontró el modelo base".to_string())?;
-        let model_path = model_install_path(&model)?;
-        let language = match state
+        let (model_id, language) = state
             .settings
             .lock()
-            .map_err(|_| "No se pudo leer la configuración".to_string())?
-            .language
-            .as_str()
-        {
-            "en" => "en",
-            _ => "es",
-        }
-        .to_string();
+            .map_err(|_| "No se pudo leer la configuración".to_string())
+            .map(|settings| {
+                let language = match settings.language.as_str() {
+                    "en" => "en",
+                    _ => "es",
+                }
+                .to_string();
+                (settings.model_id.clone(), language)
+            })?;
+        let (model, model_path) = installed_model_path(&model_id)?;
         {
             state
                 .recording
@@ -704,12 +828,14 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
                 return Err("No se capturó audio; revisa el permiso del micrófono".into());
             }
             let work = TranscriptionWork {
+                model_id,
                 model_path,
                 language,
                 samples,
             };
             let context = load_or_reuse_whisper_context(
                 &whisper_context,
+                &work.model_id,
                 &work.model_path,
                 &expected_sha256,
             )?;
@@ -931,14 +1057,116 @@ fn delete_history(id: serde_json::Value, state: State<'_, RuntimeState>) -> Resu
     Ok(())
 }
 
+fn validate_model_activation_request(
+    model_id: &str,
+    phase: RecordingPhase,
+    download_active: bool,
+    status: &ModelStatus,
+) -> Result<(), String> {
+    model_metadata(model_id)?;
+    if matches!(phase, RecordingPhase::Recording | RecordingPhase::Transcribing) {
+        return Err("No se puede cambiar el modelo durante la grabación o la transcripción".into());
+    }
+    if download_active {
+        return Err("No se puede cambiar el modelo mientras hay una descarga en curso".into());
+    }
+    if !status.installed {
+        return Err("El modelo no está instalado".into());
+    }
+    if !status.checksum_valid {
+        return Err("El checksum SHA-256 del modelo no coincide".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_model_catalog() -> Vec<core::ModelMetadata> {
     model_catalog()
 }
 
 #[tauri::command]
-fn inspect_model(model_id: Option<String>) -> Result<ModelStatus, String> {
-    model_status(model_id.as_deref().unwrap_or("base"))
+fn inspect_model(
+    model_id: Option<String>,
+    state: State<'_, RuntimeState>,
+) -> Result<ModelStatus, String> {
+    let active_model_id = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración actual".to_string())?
+        .model_id
+        .clone();
+    let requested_model_id = model_id.unwrap_or_else(|| active_model_id.clone());
+    model_status(&requested_model_id, Some(&active_model_id))
+}
+
+#[tauri::command]
+async fn activate_model(
+    model_id: String,
+    state: State<'_, RuntimeState>,
+) -> Result<(), String> {
+    let _activation_guard = state.model_activation.lock().await;
+    let active_model_id = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración actual".to_string())?
+        .model_id
+        .clone();
+    let status = model_status(&model_id, Some(&active_model_id))?;
+    let phase = state
+        .recording
+        .lock()
+        .map_err(|_| "No se pudo leer el estado de grabación".to_string())?
+        .phase();
+    validate_model_activation_request(&model_id, phase, state.downloads.is_active(), &status)?;
+
+    let (model, model_path) = installed_model_path(&model_id)?;
+    let expected_sha256 = model.sha256.clone();
+    let cache = Arc::clone(&state.whisper_context);
+    let preparation_model_id = model_id.clone();
+    let prepared_context = tauri::async_runtime::spawn_blocking(move || {
+        prepare_whisper_context(
+            &cache,
+            &preparation_model_id,
+            &model_path,
+            &expected_sha256,
+        )
+    })
+    .await
+    .map_err(|_| "La preparación del modelo terminó inesperadamente".to_string())??;
+
+    let post_status = model_status(&model_id, Some(&active_model_id))?;
+    let post_phase = state
+        .recording
+        .lock()
+        .map_err(|_| "No se pudo leer el estado de grabación".to_string())?
+        .phase();
+    validate_model_activation_request(
+        &model_id,
+        post_phase,
+        state.downloads.is_active(),
+        &post_status,
+    )?;
+
+    let settings_path = settings_path()?;
+    let previous_settings = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración actual".to_string())?
+        .clone();
+    let mut next_settings = previous_settings.clone();
+    next_settings.model_id = model_id.clone();
+    save_settings_file(&settings_path, &next_settings)?;
+
+    if let Err(error) = replace_cached_whisper_context(&state.whisper_context, &model_id, prepared_context)
+    {
+        let _ = save_settings_file(&settings_path, &previous_settings);
+        return Err(error);
+    }
+    *state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo actualizar la configuración".to_string())? = next_settings;
+    Ok(())
 }
 
 #[tauri::command]
@@ -951,7 +1179,7 @@ fn start_model_download(
         .into_iter()
         .find(|model| model.id == model_id)
         .ok_or_else(|| "Modelo no disponible".to_string())?;
-    let current_status = model_status(&model_id)?;
+    let current_status = model_status(&model_id, None)?;
     if current_status.installed && current_status.checksum_valid {
         emit_model_download_progress(
             &app,
@@ -1190,18 +1418,26 @@ fn validate_model(
     expected_sha256: Option<String>,
 ) -> Result<ModelValidation, String> {
     let path = PathBuf::from(path);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Modelo no disponible".to_string())?;
+    let model = model_catalog()
+        .into_iter()
+        .find(|model| model.filename == filename)
+        .ok_or_else(|| "Modelo no disponible".to_string())?;
     let expected = match expected_sha256 {
-        Some(expected) => expected,
-        None => path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|filename| {
-                model_catalog()
-                    .into_iter()
-                    .find(|model| model.filename == filename)
-                    .map(|model| model.sha256)
-            })
-            .ok_or_else(|| "Se requiere el checksum SHA-256 del modelo".to_string())?,
+        Some(expected) => {
+            let normalized = expected
+                .trim()
+                .strip_prefix("sha256:")
+                .unwrap_or(expected.trim());
+            if !normalized.eq_ignore_ascii_case(&model.sha256) {
+                return Err("El checksum no corresponde a un modelo del catálogo".into());
+            }
+            model.sha256
+        }
+        None => model.sha256,
     };
     validate_model_checksum(&path, &expected)
 }
@@ -1415,6 +1651,7 @@ pub fn run() {
             delete_history,
             get_model_catalog,
             inspect_model,
+            activate_model,
             start_model_download,
             discover_models,
             validate_model,
@@ -1464,8 +1701,21 @@ pub fn run() {
                 });
             }
             let whisper_context = Arc::clone(&app.state::<RuntimeState>().whisper_context);
+            if let Ok(path) = settings_path() {
+                if let Ok(settings) = load_settings_file(&path) {
+                    if let Ok(mut current) = app.state::<RuntimeState>().settings.lock() {
+                        *current = settings;
+                    }
+                }
+            }
+            let model_id = app
+                .state::<RuntimeState>()
+                .settings
+                .lock()
+                .map(|settings| settings.model_id.clone())
+                .unwrap_or_else(|_| AppSettings::default().model_id);
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(error) = warm_whisper_context(&whisper_context) {
+                if let Err(error) = warm_whisper_context(&whisper_context, &model_id) {
                     eprintln!("Whisper context warmup skipped: {error}");
                 }
             });
@@ -1588,11 +1838,13 @@ mod tests {
     #[test]
     fn transcription_work_owns_model_language_and_audio() {
         let work = TranscriptionWork {
+            model_id: "base".to_string(),
             model_path: PathBuf::from("/tmp/ggml-base.bin"),
             language: "es".to_string(),
             samples: vec![1, -2, 3],
         };
 
+        assert_eq!(work.model_id, "base");
         assert_eq!(work.model_path, PathBuf::from("/tmp/ggml-base.bin"));
         assert_eq!(work.language, "es");
         assert_eq!(work.samples, vec![1, -2, 3]);
@@ -1601,7 +1853,7 @@ mod tests {
     #[test]
     fn cached_context_is_reused_after_a_successful_load() {
         let mut cache = CachedWhisperContext::default();
-        cache.mark_ready_for_test();
+        cache.mark_ready_for_test("base");
 
         assert!(cache.is_ready());
     }
@@ -1613,5 +1865,106 @@ mod tests {
 
         assert!(!cache.is_ready());
         assert!(cache.context.is_none());
+    }
+
+    fn test_model_status(installed: bool, checksum_valid: bool) -> ModelStatus {
+        ModelStatus {
+            id: "small".into(),
+            name: "Whisper small".into(),
+            label: "Predeterminado".into(),
+            installed,
+            checksum_valid,
+            active: false,
+            size_mib: 466.0,
+            progress: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn activation_rejects_recording_phase() {
+        let status = test_model_status(true, true);
+        let error = validate_model_activation_request(
+            "small",
+            RecordingPhase::Recording,
+            false,
+            &status,
+        )
+        .expect_err("activation must reject recording");
+        assert!(error.contains("grabación"));
+    }
+
+    #[test]
+    fn activation_rejects_transcribing_phase() {
+        let status = test_model_status(true, true);
+        let error = validate_model_activation_request(
+            "small",
+            RecordingPhase::Transcribing,
+            false,
+            &status,
+        )
+        .expect_err("activation must reject transcription");
+        assert!(error.contains("transcripción"));
+    }
+
+    #[test]
+    fn activation_rejects_active_download() {
+        let status = test_model_status(true, true);
+        let error = validate_model_activation_request(
+            "small",
+            RecordingPhase::Ready,
+            true,
+            &status,
+        )
+        .expect_err("activation must reject active download");
+        assert!(error.contains("descarga"));
+    }
+
+    #[test]
+    fn activation_rejects_missing_model() {
+        let status = test_model_status(false, false);
+        let error = validate_model_activation_request(
+            "small",
+            RecordingPhase::Ready,
+            false,
+            &status,
+        )
+        .expect_err("activation must reject missing model");
+        assert!(error.contains("instalado"));
+    }
+
+    #[test]
+    fn activation_rejects_invalid_checksum() {
+        let status = test_model_status(true, false);
+        let error = validate_model_activation_request(
+            "small",
+            RecordingPhase::Ready,
+            false,
+            &status,
+        )
+        .expect_err("activation must reject invalid checksum");
+        assert!(error.contains("checksum"));
+    }
+
+    #[test]
+    fn activation_rejects_unknown_model_id() {
+        let status = test_model_status(true, true);
+        let error = validate_model_activation_request(
+            "external-model",
+            RecordingPhase::Ready,
+            false,
+            &status,
+        )
+        .expect_err("activation must reject unknown model");
+        assert!(error.contains("disponible"));
+    }
+
+    #[test]
+    fn cached_context_requires_matching_model_identity() {
+        let mut cache = CachedWhisperContext::default();
+        cache.mark_ready_for_test("base");
+
+        assert!(cache.is_ready_for_model("base"));
+        assert!(!cache.is_ready_for_model("small"));
     }
 }

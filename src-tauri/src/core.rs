@@ -16,6 +16,15 @@ pub const MODEL_BASE_SHA256: &str =
 pub const MODEL_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
 pub const MODEL_BASE_SIZE_BYTES: u64 = 147_951_465;
+pub const MODEL_SMALL_SHA256: &str =
+    "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b";
+pub const MODEL_SMALL_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
+pub const MODEL_SMALL_SIZE_BYTES: u64 = 487_601_967;
+pub const MODEL_LARGE_V3_TURBO_Q5_0_SHA256: &str =
+    "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
+pub const MODEL_LARGE_V3_TURBO_Q5_0_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
+pub const MODEL_LARGE_V3_TURBO_Q5_0_SIZE_BYTES: u64 = 574_041_195;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +32,12 @@ pub struct AppSettings {
     pub language: String,
     pub mode: String,
     pub shortcut: String,
+    #[serde(default = "legacy_model_id")]
+    pub model_id: String,
+}
+
+fn legacy_model_id() -> String {
+    "base".into()
 }
 
 impl Default for AppSettings {
@@ -31,6 +46,7 @@ impl Default for AppSettings {
             language: "es".into(),
             mode: "hold".into(),
             shortcut: "CommandOrControl+Shift+Space".into(),
+            model_id: "small".into(),
         }
     }
 }
@@ -47,6 +63,9 @@ pub fn validate_settings(settings: &AppSettings) -> Result<(), String> {
     }
     if settings.shortcut.len() > 200 {
         return Err("El atajo es demasiado largo".into());
+    }
+    if !model_catalog().iter().any(|model| model.id == settings.model_id) {
+        return Err("Modelo no disponible".into());
     }
     Ok(())
 }
@@ -229,6 +248,7 @@ pub fn now_unix_millis() -> i64 {
 #[serde(rename_all = "camelCase")]
 pub struct ModelMetadata {
     pub id: String,
+    pub label: String,
     pub filename: String,
     pub language: String,
     pub size_bytes: u64,
@@ -237,14 +257,35 @@ pub struct ModelMetadata {
 }
 
 pub fn model_catalog() -> Vec<ModelMetadata> {
-    vec![ModelMetadata {
-        id: "base".into(),
-        filename: "ggml-base.bin".into(),
-        language: "multilingual".into(),
-        size_bytes: MODEL_BASE_SIZE_BYTES,
-        sha256: MODEL_BASE_SHA256.into(),
-        download_url: MODEL_BASE_URL.into(),
-    }]
+    vec![
+        ModelMetadata {
+            id: "base".into(),
+            label: "Liviano".into(),
+            filename: "ggml-base.bin".into(),
+            language: "multilingual".into(),
+            size_bytes: MODEL_BASE_SIZE_BYTES,
+            sha256: MODEL_BASE_SHA256.into(),
+            download_url: MODEL_BASE_URL.into(),
+        },
+        ModelMetadata {
+            id: "small".into(),
+            label: "Predeterminado".into(),
+            filename: "ggml-small.bin".into(),
+            language: "multilingual".into(),
+            size_bytes: MODEL_SMALL_SIZE_BYTES,
+            sha256: MODEL_SMALL_SHA256.into(),
+            download_url: MODEL_SMALL_URL.into(),
+        },
+        ModelMetadata {
+            id: "large-v3-turbo-q5_0".into(),
+            label: "Calidad".into(),
+            filename: "ggml-large-v3-turbo-q5_0.bin".into(),
+            language: "multilingual".into(),
+            size_bytes: MODEL_LARGE_V3_TURBO_Q5_0_SIZE_BYTES,
+            sha256: MODEL_LARGE_V3_TURBO_Q5_0_SHA256.into(),
+            download_url: MODEL_LARGE_V3_TURBO_Q5_0_URL.into(),
+        },
+    ]
 }
 
 fn model_metadata_for_filename(filename: &str) -> Option<ModelMetadata> {
@@ -409,6 +450,9 @@ pub fn discover_models_in_dirs(directories: &[PathBuf]) -> Result<Vec<LocalModel
             let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
             let actual = sha256_file(&canonical)?;
             let known = model_metadata_for_filename(&filename);
+            if known.is_none() {
+                continue;
+            }
             let expected = known.as_ref().map(|model| model.sha256.clone());
             let is_valid = expected.as_ref().map(|value| value == &actual);
             let id = known
@@ -546,6 +590,13 @@ impl DownloadController {
             .and_then(|current| current.clone())
             .map(|session| session.cancelled.load(Ordering::Acquire))
             .unwrap_or(false)
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.current
+            .lock()
+            .map(|current| current.is_some())
+            .unwrap_or(true)
     }
 
     pub fn finish(&self, model_id: &str) {
@@ -1096,6 +1147,7 @@ mod tests {
             language: "en".into(),
             mode: "toggle".into(),
             shortcut: "Ctrl+Space".into(),
+            model_id: "small".into(),
         };
 
         save_settings_file(&path, &expected).expect("save settings");
@@ -1105,6 +1157,72 @@ mod tests {
             ..expected
         })
         .is_err());
+    }
+
+    #[test]
+    fn model_catalog_exposes_the_closed_whisper_selection() {
+        let catalog = serde_json::to_value(model_catalog()).expect("serialize model catalog");
+        assert_eq!(catalog.as_array().expect("catalog array").len(), 3);
+
+        assert_eq!(catalog[0]["id"], "base");
+        assert_eq!(catalog[0]["label"], "Liviano");
+        assert_eq!(catalog[0]["filename"], "ggml-base.bin");
+        assert_eq!(catalog[0]["sizeBytes"], 147_951_465_u64);
+        assert_eq!(
+            catalog[0]["downloadUrl"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+        );
+        assert_eq!(
+            catalog[0]["sha256"],
+            "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+        );
+
+        assert_eq!(catalog[1]["id"], "small");
+        assert_eq!(catalog[1]["label"], "Predeterminado");
+        assert_eq!(catalog[1]["filename"], "ggml-small.bin");
+        assert_eq!(catalog[1]["sizeBytes"], 487_601_967_u64);
+        assert_eq!(
+            catalog[1]["downloadUrl"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+        );
+        assert_eq!(
+            catalog[1]["sha256"],
+            "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+        );
+
+        assert_eq!(catalog[2]["id"], "large-v3-turbo-q5_0");
+        assert_eq!(catalog[2]["label"], "Calidad");
+        assert_eq!(catalog[2]["filename"], "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(catalog[2]["sizeBytes"], 574_041_195_u64);
+        assert_eq!(
+            catalog[2]["downloadUrl"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+        );
+        assert_eq!(
+            catalog[2]["sha256"],
+            "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        );
+    }
+
+    #[test]
+    fn old_settings_without_model_id_migrate_to_base() {
+        let root = test_root("settings-migration");
+        let path = root.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"language":"es","mode":"hold","shortcut":"Ctrl+Space"}"#,
+        )
+        .expect("write old settings");
+
+        let settings = load_settings_file(&path).expect("load old settings");
+        let json = serde_json::to_value(settings).expect("serialize migrated settings");
+        assert_eq!(json["modelId"], "base");
+    }
+
+    #[test]
+    fn new_settings_default_to_small_model() {
+        let json = serde_json::to_value(AppSettings::default()).expect("serialize defaults");
+        assert_eq!(json["modelId"], "small");
     }
 
     #[test]
