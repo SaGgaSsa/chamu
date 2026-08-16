@@ -1183,15 +1183,22 @@ fn get_model_catalog() -> Vec<core::ModelMetadata> {
     model_catalog()
 }
 
+fn inspect_model_snapshot(
+    model_id: &str,
+    cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
+) -> Result<ModelStatus, String> {
+    let mut status = model_status(model_id)?;
+    let active_model_id = cached_active_model_id(cache)?;
+    status.active = status.checksum_valid
+        && active_model_id.as_deref() == Some(status.id.as_str());
+    Ok(status)
+}
+
 #[tauri::command]
 async fn inspect_model(
     model_id: Option<String>,
     state: State<'_, RuntimeState>,
 ) -> Result<ModelStatus, String> {
-    let _model_operation = state
-        .model_activation
-        .try_lock()
-        .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
     let settings_model_id = state
         .settings
         .lock()
@@ -1199,13 +1206,12 @@ async fn inspect_model(
         .model_id
         .clone();
     let requested_model_id = model_id.unwrap_or(settings_model_id);
-    let mut status = tauri::async_runtime::spawn_blocking(move || model_status(&requested_model_id))
+    let whisper_context = Arc::clone(&state.whisper_context);
+    tauri::async_runtime::spawn_blocking(move || {
+        inspect_model_snapshot(&requested_model_id, &whisper_context)
+    })
         .await
-        .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())??;
-    let active_model_id = cached_active_model_id(&state.whisper_context)?;
-    status.active = status.checksum_valid
-        && active_model_id.as_deref() == Some(status.id.as_str());
-    Ok(status)
+        .map_err(|_| "La inspección del modelo terminó inesperadamente".to_string())?
 }
 
 #[tauri::command]
@@ -2130,6 +2136,20 @@ mod tests {
             .expect("acquire download gate");
         assert!(!model_operation_is_available(&state));
         drop(download_guard);
+    }
+
+    #[test]
+    fn model_inspection_snapshot_does_not_require_model_operation_gate() {
+        let state = RuntimeState::default();
+        let _activation_guard = state
+            .model_activation
+            .try_lock()
+            .expect("acquire activation gate");
+
+        let status = inspect_model_snapshot("small", &state.whisper_context)
+            .expect("inspection should not be blocked by activation");
+
+        assert_eq!(status.id, "small");
     }
 
     #[test]
