@@ -1385,6 +1385,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn spawn_gnome_extension_setup<F>(resource_dir: Option<PathBuf>, setup: F)
+where
+    F: FnOnce(Option<PathBuf>) + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || setup(resource_dir));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1440,19 +1447,22 @@ pub fn run() {
             if diagnosis.session == PlatformSession::Wayland
                 && diagnosis.compositor == core::Compositor::Gnome
             {
-                if let Ok(resource_dir) = app.path().resource_dir() {
-                    gnome_paste::configure_resource_dir(resource_dir);
-                }
-                match gnome_paste::install_extension() {
-                    Ok(()) => {
-                        if let Err(error) = gnome_paste::enable_extension() {
-                            eprintln!("GNOME Shell extension enable skipped: {error}");
+                let resource_dir = app.path().resource_dir().ok();
+                spawn_gnome_extension_setup(resource_dir, |resource_dir| {
+                    if let Some(resource_dir) = resource_dir {
+                        gnome_paste::configure_resource_dir(resource_dir);
+                    }
+                    match gnome_paste::install_extension() {
+                        Ok(()) => {
+                            if let Err(error) = gnome_paste::enable_extension() {
+                                eprintln!("GNOME Shell extension enable skipped: {error}");
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("GNOME Shell extension install skipped: {error}");
                         }
                     }
-                    Err(error) => {
-                        eprintln!("GNOME Shell extension install skipped: {error}");
-                    }
-                }
+                });
             }
             let whisper_context = Arc::clone(&app.state::<RuntimeState>().whisper_context);
             tauri::async_runtime::spawn_blocking(move || {
@@ -1500,6 +1510,23 @@ mod tests {
         let json = serde_json::to_value(unknown_total).expect("serialize progress");
         assert!(json.get("totalBytes").is_none());
         assert!(json.get("percent").is_none());
+    }
+
+    #[test]
+    fn gnome_extension_setup_runs_in_background() {
+        let caller_thread = std::thread::current().id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        spawn_gnome_extension_setup(None, move |_| {
+            sender
+                .send(std::thread::current().id())
+                .expect("send worker thread id");
+        });
+
+        let worker_thread = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("background setup should run");
+        assert_ne!(caller_thread, worker_thread);
     }
 
     #[test]
