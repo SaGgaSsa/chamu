@@ -26,9 +26,10 @@ mod wayland_shortcut;
 use core::{
     append_diagnostic, app_storage_paths, command_available,
     diagnose_platform as detect_platform, discover_models_in_dirs,
-    finalize_model_download, load_diagnostics, load_settings_file, model_catalog, now_unix_millis,
-    save_settings_file, validate_model_checksum, validate_settings, AppSettings, DiagnosticRecord,
-    DownloadController, HistoryEntry, HistoryStore, LocalModel, ModelValidation,
+    finalize_model_download, is_model_path_allowed, load_diagnostics, load_settings_file,
+    model_catalog, now_unix_millis, save_settings_file, validate_model_checksum, validate_settings,
+    AppSettings, DiagnosticRecord, DownloadController, HistoryEntry, HistoryStore, LocalModel,
+    ModelValidation,
     PlatformDiagnosis, PlatformSession, RecordingLifecycle, RecordingPhase,
 };
 use audio_capture::CaptureSessionHandle;
@@ -192,6 +193,11 @@ struct CachedWhisperContext {
     test_ready: bool,
     #[cfg(test)]
     test_model_id: Option<String>,
+}
+
+#[cfg(test)]
+fn model_operation_is_available(state: &RuntimeState) -> bool {
+    state.model_activation.try_lock().is_ok()
 }
 
 #[cfg(test)]
@@ -594,11 +600,12 @@ fn replace_cached_whisper_context(
     cache: &Arc<(Mutex<CachedWhisperContext>, Condvar)>,
     model_id: &str,
     context: Arc<WhisperContext>,
-) -> Result<(), String> {
+) {
     let (cache_lock, cache_ready) = &**cache;
-    let mut cached = cache_lock
-        .lock()
-        .map_err(|_| "No se pudo actualizar la caché del modelo".to_string())?;
+    let mut cached = match cache_lock.lock() {
+        Ok(cached) => cached,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     cached.context = Some(context);
     cached.model_id = Some(model_id.to_string());
     cached.loading = false;
@@ -608,7 +615,6 @@ fn replace_cached_whisper_context(
         cached.test_model_id = None;
     }
     cache_ready.notify_all();
-    Ok(())
 }
 
 /// Loads the installed model outside the UI thread. A missing model is normal
@@ -707,6 +713,10 @@ fn transcribe_work(
 
 #[tauri::command]
 fn get_settings(state: State<'_, RuntimeState>) -> Result<AppSettings, String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     let path = settings_path()?;
     let settings = match load_settings_file(&path) {
         Ok(settings) => settings,
@@ -722,6 +732,10 @@ fn get_settings(state: State<'_, RuntimeState>) -> Result<AppSettings, String> {
 
 #[tauri::command]
 fn set_settings(settings: AppSettings, state: State<'_, RuntimeState>) -> Result<(), String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     validate_settings(&settings)?;
     let active_model_id = state
         .settings
@@ -742,6 +756,10 @@ fn set_settings(settings: AppSettings, state: State<'_, RuntimeState>) -> Result
 
 #[tauri::command]
 fn set_recording_active(active: bool, state: State<'_, RuntimeState>) -> Result<(), String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     let mut recording = state
         .recording
         .lock()
@@ -758,6 +776,10 @@ fn set_recording_active(active: bool, state: State<'_, RuntimeState>) -> Result<
 
 #[tauri::command]
 fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     let mut capture = state.capture.lock().map_err(|_| "No se pudo iniciar el micrófono".to_string())?;
     if capture.is_some() {
         return Err("Ya hay un dictado en curso".into());
@@ -791,38 +813,42 @@ fn recover_dictation_after_error(state: &RuntimeState) {
 async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
     let mut capture_extracted = false;
     let result = async {
-        let capture = state
-            .capture
-            .lock()
-            .map_err(|_| "No se pudo detener el micrófono".to_string())?
-            .take()
-            .ok_or_else(|| "No hay un dictado en curso".to_string())?;
-        capture_extracted = true;
+        let (capture, model_id, language) = {
+            let _model_operation = state
+                .model_activation
+                .try_lock()
+                .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
+            let capture = state
+                .capture
+                .lock()
+                .map_err(|_| "No se pudo detener el micrófono".to_string())?
+                .take()
+                .ok_or_else(|| "No hay un dictado en curso".to_string())?;
+            capture_extracted = true;
 
-        let (model_id, language) = state
-            .settings
-            .lock()
-            .map_err(|_| "No se pudo leer la configuración".to_string())
-            .map(|settings| {
-                let language = match settings.language.as_str() {
-                    "en" => "en",
-                    _ => "es",
-                }
-                .to_string();
-                (settings.model_id.clone(), language)
-            })?;
-        let (model, model_path) = installed_model_path(&model_id)?;
-        {
+            let (model_id, language) = state
+                .settings
+                .lock()
+                .map_err(|_| "No se pudo leer la configuración".to_string())
+                .map(|settings| {
+                    let language = match settings.language.as_str() {
+                        "en" => "en",
+                        _ => "es",
+                    }
+                    .to_string();
+                    (settings.model_id.clone(), language)
+                })?;
             state
                 .recording
                 .lock()
                 .map_err(|_| "No se pudo actualizar el estado".to_string())?
                 .stop_without_audio()?;
-        }
+            (capture, model_id, language)
+        };
 
-        let expected_sha256 = model.sha256.clone();
         let whisper_context = Arc::clone(&state.whisper_context);
         let text = tauri::async_runtime::spawn_blocking(move || {
+            let (model, model_path) = installed_model_path(&model_id)?;
             let samples = capture.stop()?;
             if samples.is_empty() {
                 return Err("No se capturó audio; revisa el permiso del micrófono".into());
@@ -833,6 +859,7 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
                 language,
                 samples,
             };
+            let expected_sha256 = model.sha256.clone();
             let context = load_or_reuse_whisper_context(
                 &whisper_context,
                 &work.model_id,
@@ -923,6 +950,10 @@ fn get_recording_phase(state: State<'_, RuntimeState>) -> Result<RecordingPhase,
 
 #[tauri::command]
 fn mark_recording_copied(state: State<'_, RuntimeState>) -> Result<(), String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     state
         .recording
         .lock()
@@ -933,6 +964,10 @@ fn mark_recording_copied(state: State<'_, RuntimeState>) -> Result<(), String> {
 
 #[tauri::command]
 fn mark_recording_ready(state: State<'_, RuntimeState>) -> Result<(), String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     state
         .recording
         .lock()
@@ -943,6 +978,10 @@ fn mark_recording_ready(state: State<'_, RuntimeState>) -> Result<(), String> {
 
 #[tauri::command]
 fn mark_recording_error(state: State<'_, RuntimeState>) -> Result<(), String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     state
         .recording
         .lock()
@@ -1063,18 +1102,27 @@ fn validate_model_activation_request(
     download_active: bool,
     status: &ModelStatus,
 ) -> Result<(), String> {
+    validate_model_activation_light(model_id, phase, download_active)?;
+    if !status.installed {
+        return Err("El modelo no está instalado".into());
+    }
+    if !status.checksum_valid {
+        return Err("El checksum SHA-256 del modelo no coincide".into());
+    }
+    Ok(())
+}
+
+fn validate_model_activation_light(
+    model_id: &str,
+    phase: RecordingPhase,
+    download_active: bool,
+) -> Result<(), String> {
     model_metadata(model_id)?;
     if matches!(phase, RecordingPhase::Recording | RecordingPhase::Transcribing) {
         return Err("No se puede cambiar el modelo durante la grabación o la transcripción".into());
     }
     if download_active {
         return Err("No se puede cambiar el modelo mientras hay una descarga en curso".into());
-    }
-    if !status.installed {
-        return Err("El modelo no está instalado".into());
-    }
-    if !status.checksum_valid {
-        return Err("El checksum SHA-256 del modelo no coincide".into());
     }
     Ok(())
 }
@@ -1089,6 +1137,10 @@ fn inspect_model(
     model_id: Option<String>,
     state: State<'_, RuntimeState>,
 ) -> Result<ModelStatus, String> {
+    let _model_operation = state
+        .model_activation
+        .try_lock()
+        .map_err(|_| "El modelo está cambiando; inténtalo de nuevo".to_string())?;
     let active_model_id = state
         .settings
         .lock()
@@ -1111,19 +1163,27 @@ async fn activate_model(
         .map_err(|_| "No se pudo leer la configuración actual".to_string())?
         .model_id
         .clone();
-    let status = model_status(&model_id, Some(&active_model_id))?;
     let phase = state
         .recording
         .lock()
         .map_err(|_| "No se pudo leer el estado de grabación".to_string())?
         .phase();
-    validate_model_activation_request(&model_id, phase, state.downloads.is_active(), &status)?;
+    let download_active = state.downloads.is_active();
+    validate_model_activation_light(&model_id, phase, download_active)?;
 
-    let (model, model_path) = installed_model_path(&model_id)?;
-    let expected_sha256 = model.sha256.clone();
     let cache = Arc::clone(&state.whisper_context);
     let preparation_model_id = model_id.clone();
+    let preparation_active_model_id = active_model_id.clone();
     let prepared_context = tauri::async_runtime::spawn_blocking(move || {
+        let status = model_status(&preparation_model_id, Some(&preparation_active_model_id))?;
+        validate_model_activation_request(
+            &preparation_model_id,
+            phase,
+            download_active,
+            &status,
+        )?;
+        let (model, model_path) = installed_model_path(&preparation_model_id)?;
+        let expected_sha256 = model.sha256.clone();
         prepare_whisper_context(
             &cache,
             &preparation_model_id,
@@ -1134,18 +1194,12 @@ async fn activate_model(
     .await
     .map_err(|_| "La preparación del modelo terminó inesperadamente".to_string())??;
 
-    let post_status = model_status(&model_id, Some(&active_model_id))?;
     let post_phase = state
         .recording
         .lock()
         .map_err(|_| "No se pudo leer el estado de grabación".to_string())?
         .phase();
-    validate_model_activation_request(
-        &model_id,
-        post_phase,
-        state.downloads.is_active(),
-        &post_status,
-    )?;
+    validate_model_activation_light(&model_id, post_phase, state.downloads.is_active())?;
 
     let settings_path = settings_path()?;
     let previous_settings = state
@@ -1157,11 +1211,7 @@ async fn activate_model(
     next_settings.model_id = model_id.clone();
     save_settings_file(&settings_path, &next_settings)?;
 
-    if let Err(error) = replace_cached_whisper_context(&state.whisper_context, &model_id, prepared_context)
-    {
-        let _ = save_settings_file(&settings_path, &previous_settings);
-        return Err(error);
-    }
+    replace_cached_whisper_context(&state.whisper_context, &model_id, prepared_context);
     *state
         .settings
         .lock()
@@ -1418,6 +1468,10 @@ fn validate_model(
     expected_sha256: Option<String>,
 ) -> Result<ModelValidation, String> {
     let path = PathBuf::from(path);
+    let paths = app_storage_paths()?;
+    if !is_model_path_allowed(&path, &paths.model_dirs)? {
+        return Err("La ruta del modelo está fuera de los directorios permitidos".into());
+    }
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1966,5 +2020,16 @@ mod tests {
 
         assert!(cache.is_ready_for_model("base"));
         assert!(!cache.is_ready_for_model("small"));
+    }
+
+    #[test]
+    fn model_operation_gate_is_busy_during_activation() {
+        let state = RuntimeState::default();
+        let _activation_guard = state
+            .model_activation
+            .try_lock()
+            .expect("acquire activation gate");
+
+        assert!(!model_operation_is_available(&state));
     }
 }

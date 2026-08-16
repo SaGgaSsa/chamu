@@ -522,6 +522,21 @@ pub fn app_storage_paths() -> Result<AppStoragePaths, String> {
     })
 }
 
+pub fn is_model_path_allowed(path: &Path, directories: &[PathBuf]) -> Result<bool, String> {
+    let canonical_path = fs::canonicalize(path).map_err(|error| error.to_string())?;
+    for directory in directories {
+        let canonical_directory = match fs::canonicalize(directory) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        if canonical_path.starts_with(canonical_directory) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelDownloadPlan {
@@ -1223,6 +1238,23 @@ mod tests {
     fn new_settings_default_to_small_model() {
         let json = serde_json::to_value(AppSettings::default()).expect("serialize defaults");
         assert_eq!(json["modelId"], "small");
+    }
+
+    #[test]
+    fn model_path_policy_rejects_catalog_named_files_outside_model_dirs() {
+        let root = test_root("model-path-policy");
+        let allowed = root.join("allowed");
+        let outside = root.join("outside");
+        fs::create_dir_all(&allowed).expect("create allowed directory");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        let allowed_model = allowed.join("ggml-small.bin");
+        let outside_model = outside.join("ggml-small.bin");
+        fs::write(&allowed_model, b"model").expect("write allowed model");
+        fs::write(&outside_model, b"model").expect("write outside model");
+
+        assert!(is_model_path_allowed(&allowed_model, &[allowed]).expect("check allowed path"));
+        assert!(!is_model_path_allowed(&outside_model, &[root.join("allowed")])
+            .expect("check outside path"));
     }
 
     #[test]
