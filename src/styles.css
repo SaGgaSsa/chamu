@@ -466,6 +466,116 @@ h2 {
   color: var(--color-status-error);
 }
 
+.model-selector {
+  display: flex;
+  width: 100%;
+  max-width: 380px;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-glass);
+  text-align: left;
+}
+
+.model-selector__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.model-selector__header h2 {
+  font-size: 20px;
+}
+
+.model-selector__active {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-success) 44%, transparent);
+  border-radius: var(--radius-full);
+  color: var(--color-success);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.model-selector__choices {
+  margin-top: var(--space-2);
+}
+
+.model-selector__choice {
+  min-height: 64px;
+  padding: var(--space-2) var(--space-3);
+}
+
+.model-selector__choice small[data-model-status] {
+  color: var(--color-success);
+}
+
+.model-selector__choice input:disabled,
+.model-selector__choice:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.model-selector__download,
+.model-selector__consent {
+  margin: var(--space-2) 0 0;
+}
+
+.model-selector__download-button,
+.model-selector__activate-button {
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.model-selector__message,
+.model-selector__loading {
+  margin: var(--space-2) 0 0;
+  color: var(--color-on-surface-variant);
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.main-model-grid {
+  display: grid;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  align-items: stretch;
+  gap: var(--space-4);
+}
+
+.main-model-grid > :first-child {
+  max-width: none;
+}
+
+.main-model-grid > .model-selector {
+  max-width: none;
+  overflow-y: auto;
+}
+
+@media (max-width: 860px) {
+  .main-model-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .main-model-grid > .model-selector {
+    max-width: 760px;
+    justify-self: center;
+  }
+}
+
+@media (max-width: 560px) {
+  .model-selector {
+    padding: var(--space-4);
+  }
+}
+
 .dictation-tester {
   display: flex;
   width: 100%;

@@ -5,11 +5,23 @@ import type { AppSettings } from "../domain/settings";
 export interface ModelStatus {
   id: string;
   name: string;
+  label: string;
   installed: boolean;
   checksumValid: boolean;
+  active: boolean;
   sizeMiB: number;
   progress?: number;
   error?: string;
+}
+
+export interface ModelMetadata {
+  id: string;
+  label: string;
+  filename: string;
+  language: string;
+  sizeBytes: number;
+  sha256: string;
+  downloadUrl: string;
 }
 
 export type ModelDownloadPhase =
@@ -124,7 +136,9 @@ export interface DictationResult {
 export interface ChamuBridge {
   loadSettings: () => Promise<AppSettings>;
   saveSettings: (settings: AppSettings) => Promise<void>;
+  getModelCatalog: () => Promise<ModelMetadata[]>;
   inspectModel: (modelId?: string) => Promise<ModelStatus>;
+  activateModel: (modelId: string) => Promise<void>;
   startModelDownload: (modelId: string) => Promise<void>;
   onModelDownloadProgress: (
     listener: (progress: ModelDownloadProgress) => void,
@@ -162,6 +176,10 @@ export function saveSettings(settings: AppSettings): Promise<void> {
   return invoke("set_settings", { settings });
 }
 
+export function getModelCatalog(): Promise<ModelMetadata[]> {
+  return invoke<ModelMetadata[]>("get_model_catalog");
+}
+
 export function setRecordingActive(active: boolean): Promise<void> {
   return invoke("set_recording_active", { active });
 }
@@ -182,6 +200,10 @@ export function inspectModel(modelId?: string): Promise<ModelStatus> {
   return modelId === undefined
     ? invoke<ModelStatus>("inspect_model")
     : invoke<ModelStatus>("inspect_model", { modelId });
+}
+
+export function activateModel(modelId: string): Promise<void> {
+  return invoke("activate_model", { modelId });
 }
 
 export function startModelDownload(modelId: string): Promise<void> {
@@ -289,7 +311,9 @@ export function deleteHistory(id: string | number): Promise<void> {
 export const nativeBridge: ChamuBridge = {
   loadSettings,
   saveSettings,
+  getModelCatalog,
   inspectModel,
+  activateModel,
   startModelDownload,
   onModelDownloadProgress,
   cancelModelDownload,

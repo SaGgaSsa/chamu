@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import { DEFAULT_SETTINGS, type AppSettings } from "./domain/settings";
-import type { ChamuBridge, HistoryEntry } from "./native/commands";
+import type { ChamuBridge, HistoryEntry, ModelMetadata } from "./native/commands";
+import { MODEL_PROFILES } from "./components/ModelSelector";
 import App from "./App";
 
 const shortcutPlugin = vi.hoisted(() => ({
@@ -12,10 +13,29 @@ const shortcutPlugin = vi.hoisted(() => ({
 vi.mock("@tauri-apps/plugin-global-shortcut", () => shortcutPlugin);
 
 function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
+  const catalog: ModelMetadata[] = MODEL_PROFILES.map((profile) => ({
+    id: profile.id,
+    label: profile.label,
+    filename: `ggml-${profile.id}.bin`,
+    language: "multilingual",
+    sizeBytes: profile.displaySizeMiB * 1024 * 1024,
+    sha256: "checksum",
+    downloadUrl: "https://example.invalid/model.bin",
+  }));
   return {
     loadSettings: vi.fn(async () => DEFAULT_SETTINGS),
     saveSettings: vi.fn(async (_settings: AppSettings) => undefined),
-    inspectModel: vi.fn(async () => ({ id: "base", name: "Whisper base", installed: true, checksumValid: true, sizeMiB: 142 })),
+    getModelCatalog: vi.fn(async () => catalog),
+    inspectModel: vi.fn(async (modelId = DEFAULT_SETTINGS.modelId) => ({
+      id: modelId,
+      name: `Whisper ${modelId}`,
+      label: MODEL_PROFILES.find((profile) => profile.id === modelId)?.label ?? "Predeterminado",
+      installed: true,
+      checksumValid: true,
+      active: modelId === DEFAULT_SETTINGS.modelId,
+      sizeMiB: MODEL_PROFILES.find((profile) => profile.id === modelId)?.displaySizeMiB ?? 466,
+    })),
+    activateModel: vi.fn(async () => undefined),
     startModelDownload: vi.fn(),
     onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(),

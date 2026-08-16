@@ -5,11 +5,12 @@ import {
 } from "./settings";
 
 describe("app settings", () => {
-  it("defaults to Spanish, hold-to-talk, and a global shortcut", () => {
+  it("defaults to the small model, Spanish, hold-to-talk, and a global shortcut", () => {
     expect(DEFAULT_SETTINGS).toEqual({
       language: "es",
       mode: "hold",
       shortcut: "CommandOrControl+Shift+Space",
+      modelId: "small",
     });
   });
 
@@ -23,6 +24,13 @@ describe("app settings", () => {
       language: "en",
       mode: "toggle",
       shortcut: "CommandOrControl+Shift+Space",
+      modelId: "small",
     });
+  });
+
+  it("keeps an explicitly selected model when merging settings", () => {
+    const settings = mergeSettings(DEFAULT_SETTINGS, { modelId: "large-v3-turbo-q5_0" });
+
+    expect(settings.modelId).toBe("large-v3-turbo-q5_0");
   });
 });

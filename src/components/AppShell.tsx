@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createRecordingState, type RecordingState } from "../domain/recording";
+import { createRecordingState, isBusyRecordingState, type RecordingState } from "../domain/recording";
 import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
 import {
   nativeBridge,
@@ -13,6 +13,7 @@ import { PrivacyBadge } from "./PrivacyBadge";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
+import { ModelSelector } from "./ModelSelector";
 
 interface AppShellProps {
   recordingState?: RecordingState;
@@ -188,6 +189,11 @@ export function AppShell({
     void activeBridge.saveSettings(nextSettings).catch((error: unknown) => {
       setSettingsSaveError(getErrorMessage(error, "No se pudo guardar la configuración"));
     });
+  }
+
+  function handleModelActivated(modelId: string) {
+    setCurrentSettings((current) => ({ ...current, modelId }));
+    setDraftSettings((current) => ({ ...current, modelId }));
   }
 
   function handleShortcutCaptured() {
@@ -572,24 +578,36 @@ export function AppShell({
           </p>
           <StatusBubble state={currentRecordingState} />
         </section>
-        <DictationTester
-          ref={testerRef}
-          settings={currentSettings}
-          onSettingsChange={handleTesterSettingsChange}
-          state={currentRecordingState}
-          pending={dictationActionPending}
-          starting={dictationStarting}
-          microphoneName={microphoneName}
-          onDictationClick={() => void handleDictation()}
-          onShortcutCaptured={handleShortcutCaptured}
-          resultText={dictationResult?.text}
-          resultId={dictationResult?.id}
-          resultPasted={dictationResult?.pasted}
-          shortcutRegistrationError={shortcutRegistrationError}
-          waylandShortcutStatus={waylandShortcutStatus}
-          onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}
-          onCapturingChange={setShortcutCaptureActive}
-        />
+        <div className="main-model-grid">
+          <DictationTester
+            ref={testerRef}
+            settings={currentSettings}
+            onSettingsChange={handleTesterSettingsChange}
+            state={currentRecordingState}
+            pending={dictationActionPending}
+            starting={dictationStarting}
+            microphoneName={microphoneName}
+            onDictationClick={() => void handleDictation()}
+            onShortcutCaptured={handleShortcutCaptured}
+            resultText={dictationResult?.text}
+            resultId={dictationResult?.id}
+            resultPasted={dictationResult?.pasted}
+            shortcutRegistrationError={shortcutRegistrationError}
+            waylandShortcutStatus={waylandShortcutStatus}
+            onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}
+            onCapturingChange={setShortcutCaptureActive}
+          />
+          <ModelSelector
+            bridge={activeBridge}
+            disabled={
+              dictationActionPending
+              || dictationStarting
+              || isBusyRecordingState(currentRecordingState)
+            }
+            onModelActivated={handleModelActivated}
+            selectedModelId={currentSettings.modelId}
+          />
+        </div>
         {settingsSaveError && <p className="error-message" role="alert">{settingsSaveError}</p>}
       </div>
 

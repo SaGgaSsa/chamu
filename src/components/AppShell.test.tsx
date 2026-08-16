@@ -6,8 +6,11 @@ import { DEFAULT_SETTINGS, type AppSettings } from "../domain/settings";
 import type {
   ChamuBridge,
   DictationResult,
+  ModelMetadata,
+  ModelStatus,
   WaylandHoldShortcutEvent,
 } from "../native/commands";
+import { MODEL_PROFILES } from "./ModelSelector";
 
 const shortcutPlugin = vi.hoisted(() => ({
   register: vi.fn(async (..._args: unknown[]) => undefined),
@@ -17,10 +20,29 @@ const shortcutPlugin = vi.hoisted(() => ({
 vi.mock("@tauri-apps/plugin-global-shortcut", () => shortcutPlugin);
 
 function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
+  const catalog: ModelMetadata[] = MODEL_PROFILES.map((profile) => ({
+    id: profile.id,
+    label: profile.label,
+    filename: `ggml-${profile.id}.bin`,
+    language: "multilingual",
+    sizeBytes: profile.displaySizeMiB * 1024 * 1024,
+    sha256: "checksum",
+    downloadUrl: "https://example.invalid/model.bin",
+  }));
   return {
     loadSettings: vi.fn(async () => DEFAULT_SETTINGS),
     saveSettings: vi.fn(async (_settings: AppSettings) => undefined),
-    inspectModel: vi.fn(),
+    getModelCatalog: vi.fn(async () => catalog),
+    inspectModel: vi.fn(async (modelId = DEFAULT_SETTINGS.modelId): Promise<ModelStatus> => ({
+      id: modelId,
+      name: `Whisper ${modelId}`,
+      label: MODEL_PROFILES.find((profile) => profile.id === modelId)?.label ?? "Predeterminado",
+      installed: true,
+      checksumValid: true,
+      active: modelId === DEFAULT_SETTINGS.modelId,
+      sizeMiB: MODEL_PROFILES.find((profile) => profile.id === modelId)?.displaySizeMiB ?? 466,
+    })),
+    activateModel: vi.fn(async () => undefined),
     startModelDownload: vi.fn(),
     onModelDownloadProgress: vi.fn(async () => () => undefined),
     cancelModelDownload: vi.fn(),
@@ -183,6 +205,41 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
     fireEvent.click(screen.getByRole("button", { name: /reiniciar onboarding/i }));
     expect(onRestartOnboarding).toHaveBeenCalledOnce();
+  });
+
+  it("shows the active model and its local validation states beside the dictation tester", async () => {
+    const bridge = makeBridge();
+    render(<AppShell bridge={bridge} />);
+
+    await waitFor(() => expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible());
+    expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeChecked();
+    expect(screen.getByText(/activo.*instalado y validado/i)).toBeVisible();
+    expect(screen.getByText(/liviano.*142 MiB/i)).toBeVisible();
+  });
+
+  it("disables model controls while dictation is recording", async () => {
+    const bridge = makeBridge();
+    render(<AppShell bridge={bridge} recordingState={{ status: "recording" }} />);
+
+    await waitFor(() => expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeDisabled());
+    expect(screen.getByText(/selector bloqueado/i)).toBeVisible();
+  });
+
+  it("keeps the previous model selected when activation fails", async () => {
+    const bridge = makeBridge({
+      activateModel: vi.fn(async () => {
+        throw new Error("No se pudo activar el modelo");
+      }),
+    });
+    render(<AppShell bridge={bridge} />);
+
+    const previous = await screen.findByRole("radio", { name: /predeterminado/i });
+    const candidate = screen.getByRole("radio", { name: /liviano/i });
+    fireEvent.click(candidate);
+
+    await waitFor(() => expect(screen.getByText("No se pudo activar el modelo")).toBeVisible());
+    expect(previous).toBeChecked();
+    expect(candidate).not.toBeChecked();
   });
 
   it("saves mode and shortcut changes made in the dictation tester", async () => {

@@ -9,8 +9,10 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 import {
+  activateModel,
   cancelModelDownload,
   copyHistory,
+  getModelCatalog,
   onModelDownloadProgress,
   startModelDownload,
 } from "./commands";
@@ -32,6 +34,18 @@ describe("native history bridge", () => {
     await startModelDownload("base");
 
     expect(invoke).toHaveBeenCalledWith("start_model_download", { modelId: "base" });
+  });
+
+  it("loads the closed model catalog through the native command", async () => {
+    await getModelCatalog();
+
+    expect(invoke).toHaveBeenCalledWith("get_model_catalog");
+  });
+
+  it("activates a selected model through the native command", async () => {
+    await activateModel("small");
+
+    expect(invoke).toHaveBeenCalledWith("activate_model", { modelId: "small" });
   });
 
   it("cancels a model download through the native command", async () => {

@@ -10,15 +10,15 @@ import {
   type ChamuBridge,
   type DictationResult,
   type ModelDownloadProgress,
+  type ModelMetadata,
   type ModelStatus,
 } from "../native/commands";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
+import { MODEL_PROFILES } from "./ModelSelector";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
 
 type OnboardingStep = "model" | "setup";
-
-const MODEL_ID = "base";
 
 interface ProgressListener {
   token: symbol;
@@ -29,13 +29,6 @@ export interface OnboardingFlowProps {
   bridge?: ChamuBridge;
   initialSettings?: AppSettings;
   onComplete: (settings: AppSettings) => void;
-}
-
-function getModelDescription(model: ModelStatus | null): string {
-  if (!model) return "Comprobando si ya está instalado…";
-  if (model.installed && model.checksumValid) return "Modelo listo en este equipo";
-  if (model.installed) return "El checksum no coincide; descarga el modelo otra vez";
-  return "No se encontró un modelo local";
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -49,11 +42,19 @@ export function OnboardingFlow({
 }: OnboardingFlowProps) {
   const [step, setStep] = useState<OnboardingStep>("model");
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
-  const [model, setModel] = useState<ModelStatus | null>(null);
-  const [modelError, setModelError] = useState<string | null>(null);
-  const [downloadConsent, setDownloadConsent] = useState(false);
+  const [selectedModelId, setSelectedModelId] = useState(() => (
+    MODEL_PROFILES.some((profile) => profile.id === initialSettings.modelId)
+      ? initialSettings.modelId
+      : "small"
+  ));
+  const [catalog, setCatalog] = useState<ModelMetadata[]>([]);
+  const [modelStatuses, setModelStatuses] = useState<Record<string, ModelStatus>>({});
+  const [modelErrors, setModelErrors] = useState<Record<string, string>>({});
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [downloadConsentId, setDownloadConsentId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [downloadingModelId, setDownloadingModelId] = useState<string | null>(null);
+  const [activating, setActivating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dictationState, setDictationState] = useState<RecordingState>(createRecordingState);
@@ -72,12 +73,76 @@ export function OnboardingFlow({
   const dictationResultCounterRef = useRef(0);
   const shortcutHandlerRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
 
+  const selectedProfile = MODEL_PROFILES.find((profile) => profile.id === selectedModelId) ?? MODEL_PROFILES[1];
+  const selectedModel = modelStatuses[selectedModelId];
+  const modelReady = Boolean(selectedModel?.installed && selectedModel.checksumValid);
+  const downloadProgressText = downloadProgress
+    ? `${downloadProgress.message}${downloadProgress.percent === undefined ? "" : ` · ${downloadProgress.percent}%`}`
+    : undefined;
+  const profiles = useMemo(
+    () => MODEL_PROFILES.filter((profile) => catalog.some((metadata) => metadata.id === profile.id)),
+    [catalog],
+  );
+
+  function modelStatusLabel(modelId: string): string {
+    if (downloadingModelId === modelId) {
+      const percent = downloadProgress?.percent === undefined ? "" : ` · ${downloadProgress.percent}%`;
+      return `Descarga en curso${percent}`;
+    }
+    const error = modelErrors[modelId];
+    if (error) return `Error: ${error}`;
+    const model = modelStatuses[modelId];
+    if (!model) return "Comprobando estado…";
+    if (model.installed && !model.checksumValid) return "Checksum inválido";
+    if (model.error) return `Error: ${model.error}`;
+    if (model.installed && model.checksumValid) {
+      return model.active ? "Activo · instalado y validado" : "Instalado y validado";
+    }
+    if (model.installed) return "Checksum inválido";
+    return "Descargable";
+  }
+
+  function modelDescription(): string {
+    if (catalogError) return catalogError;
+    if (modelErrors[selectedModelId]) return modelErrors[selectedModelId];
+    if (!selectedModel) return "Comprobando estado…";
+    if (selectedModel.installed && !selectedModel.checksumValid) return "Checksum inválido; descarga el perfil otra vez";
+    if (selectedModel.error) return selectedModel.error;
+    if (selectedModel.installed && selectedModel.checksumValid) return "Modelo listo en este equipo · instalado y validado";
+    if (selectedModel.installed) return "Checksum inválido; descarga el perfil otra vez";
+    return "Perfil descargable; todavía no está instalado";
+  }
+
+  async function inspectProfile(modelId: string) {
+    try {
+      const status = await bridge.inspectModel(modelId);
+      if (disposedRef.current) return;
+      setModelStatuses((current) => ({ ...current, [modelId]: status }));
+      setModelErrors((current) => {
+        if (!(modelId in current)) return current;
+        const next = { ...current };
+        delete next[modelId];
+        return next;
+      });
+    } catch (error: unknown) {
+      if (!disposedRef.current) {
+        setModelErrors((current) => ({
+          ...current,
+          [modelId]: getErrorMessage(error, "No se pudo comprobar el modelo"),
+        }));
+      }
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
-    void bridge.inspectModel(MODEL_ID).then((status) => {
-      if (!cancelled) setModel(status);
+    setCatalogError(null);
+    void bridge.getModelCatalog().then(async (loadedCatalog) => {
+      if (cancelled) return;
+      setCatalog(loadedCatalog);
+      await Promise.all(MODEL_PROFILES.map((profile) => inspectProfile(profile.id)));
     }).catch((error: unknown) => {
-      if (!cancelled) setModelError(getErrorMessage(error, "No se pudo comprobar el modelo"));
+      if (!cancelled) setCatalogError(getErrorMessage(error, "No se pudo cargar el catálogo de modelos"));
     });
     return () => {
       cancelled = true;
@@ -119,75 +184,120 @@ export function OnboardingFlow({
     };
   }, []);
 
-  const modelReady = Boolean(model?.installed && model.checksumValid);
   const canContinue = useMemo(() => {
-    if (step === "model") return modelReady && !downloading;
+    if (step === "model") return modelReady && !downloadingModelId && !activating;
     return !saving;
-  }, [downloading, modelReady, saving, step]);
+  }, [activating, downloadingModelId, modelReady, saving, step]);
 
   async function refreshModel() {
-    setModelError(null);
-    try {
-      setModel(await bridge.inspectModel(MODEL_ID));
-    } catch (error: unknown) {
-      setModelError(getErrorMessage(error, "No se pudo buscar un modelo existente"));
-    }
+    setModelErrors((current) => {
+      if (!(selectedModelId in current)) return current;
+      const next = { ...current };
+      delete next[selectedModelId];
+      return next;
+    });
+    await inspectProfile(selectedModelId);
   }
 
-  async function handleDownloadProgress(progress: ModelDownloadProgress, token: symbol) {
+  async function handleDownloadProgress(progress: ModelDownloadProgress, token: symbol, modelId: string) {
     if (unlistenRef.current?.token !== token) return;
-    if (progress.modelId !== MODEL_ID) return;
+    if (progress.modelId !== modelId) return;
     setDownloadProgress(progress);
     if (progress.phase === "failed") {
       releaseProgressListener(token);
-      setDownloading(false);
-      setModelError(progress.message);
+      setDownloadingModelId(null);
+      setModelErrors((current) => ({ ...current, [modelId]: progress.message }));
       return;
     }
     if (progress.phase === "cancelled") {
       releaseProgressListener(token);
-      setDownloading(false);
-      setModelError(progress.message);
+      setDownloadingModelId(null);
+      setModelErrors((current) => ({ ...current, [modelId]: progress.message }));
       return;
     }
     if (progress.phase === "completed") {
       releaseProgressListener(token);
-      setDownloading(false);
-      setDownloadConsent(false);
+      setDownloadingModelId(null);
+      setDownloadConsentId(null);
       await refreshModel();
     }
   }
 
   async function confirmDownload() {
-    if (!downloadConsent || downloading) return;
-    setModelError(null);
+    const modelId = downloadConsentId;
+    if (!modelId || downloadingModelId || activating) return;
+    setModelErrors((current) => {
+      if (!(modelId in current)) return current;
+      const next = { ...current };
+      delete next[modelId];
+      return next;
+    });
     setDownloadProgress(null);
     releaseProgressListener();
     const listenerToken = Symbol("model-download-progress");
     unlistenRef.current = { token: listenerToken };
+    setDownloadingModelId(modelId);
     try {
       const unlisten = await bridge.onModelDownloadProgress((progress) => {
-        void handleDownloadProgress(progress, listenerToken);
+        void handleDownloadProgress(progress, listenerToken, modelId);
       });
       if (disposedRef.current || unlistenRef.current?.token !== listenerToken) {
         unlisten();
         return;
       }
       unlistenRef.current.unlisten = unlisten;
-      setDownloading(true);
-      await bridge.startModelDownload(MODEL_ID);
+      await bridge.startModelDownload(modelId);
     } catch (error: unknown) {
       releaseProgressListener(listenerToken);
-      setDownloading(false);
-      setModelError(getErrorMessage(error, "No se pudo iniciar la descarga"));
+      setDownloadingModelId(null);
+      setModelErrors((current) => ({
+        ...current,
+        [modelId]: getErrorMessage(error, "No se pudo iniciar la descarga"),
+      }));
     }
   }
 
   async function cancelDownload() {
+    if (!downloadingModelId) return;
     try {
-      await bridge.cancelModelDownload(MODEL_ID);
+      await bridge.cancelModelDownload(downloadingModelId);
     } catch (error: unknown) {
-      setModelError(getErrorMessage(error, "No se pudo cancelar la descarga"));
+      setModelErrors((current) => ({
+        ...current,
+        [downloadingModelId]: getErrorMessage(error, "No se pudo cancelar la descarga"),
+      }));
+    }
+  }
+
+  async function activateSelectedModel() {
+    if (!modelReady || downloadingModelId || activating) return;
+    setActivating(true);
+    setModelErrors((current) => {
+      if (!(selectedModelId in current)) return current;
+      const next = { ...current };
+      delete next[selectedModelId];
+      return next;
+    });
+    try {
+      await bridge.activateModel(selectedModelId);
+      if (disposedRef.current) return;
+      setSettings((current) => ({ ...current, modelId: selectedModelId }));
+      setModelStatuses((current) => Object.fromEntries(
+        Object.entries(current).map(([modelId, status]) => [
+          modelId,
+          { ...status, active: modelId === selectedModelId },
+        ]),
+      ));
+      setStep("setup");
+    } catch (error: unknown) {
+      if (!disposedRef.current) {
+        setModelErrors((current) => ({
+          ...current,
+          [selectedModelId]: getErrorMessage(error, "No se pudo activar el modelo"),
+        }));
+      }
+    } finally {
+      if (!disposedRef.current) setActivating(false);
     }
   }
 
@@ -358,21 +468,44 @@ export function OnboardingFlow({
                   <span><strong>English</strong><small>Interfaz y dictado en inglés</small></span>
                 </label>
               </fieldset>
+              <fieldset className="choice-list model-selector__choices" disabled={Boolean(downloadingModelId) || activating}>
+                <legend>Perfil de Whisper</legend>
+                {profiles.map((profile) => (
+                  <label className="choice-card model-selector__choice" key={profile.id}>
+                    <input
+                      checked={selectedModelId === profile.id}
+                      name="onboarding-model-profile"
+                      onChange={() => {
+                        setSelectedModelId(profile.id);
+                        setDownloadConsentId(null);
+                        setDownloadProgress(null);
+                      }}
+                      type="radio"
+                      value={profile.id}
+                    />
+                    <span>
+                      <strong>{profile.label} · {profile.displaySizeMiB} MiB</strong>
+                      <small>{profile.id}</small>
+                      <small data-model-status={profile.id}>{modelStatusLabel(profile.id)}</small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
               <div className={`check-panel ${modelReady ? "check-panel--ok" : ""}`}>
-                <strong>{model?.name ?? "Whisper base multilingüe"}</strong>
-                <span>{modelError ?? getModelDescription(model)}</span>
-                {downloadProgress && !downloading && <small>{downloadProgress.message}{downloadProgress.percent === undefined ? "" : ` · ${downloadProgress.percent}%`}</small>}
+                <strong>{selectedModel?.name ?? `Whisper ${selectedModelId}`}</strong>
+                <span>{modelDescription()}</span>
+                {downloadProgressText && <small>{downloadProgressText}</small>}
               </div>
-              <button className="secondary-button" onClick={() => void refreshModel()} type="button">Buscar un modelo existente</button>
-              {model && !modelReady && !downloading && <button className="primary-button" onClick={() => setDownloadConsent(true)} type="button">Descargar modelo (142 MiB)</button>}
-              {downloadConsent && !downloading && (
+              <button className="secondary-button" disabled={Boolean(downloadingModelId) || activating} onClick={() => void refreshModel()} type="button">Buscar un modelo existente</button>
+              {selectedModel && !modelReady && !downloadingModelId && !activating && <button className="primary-button" onClick={() => setDownloadConsentId(selectedModelId)} type="button">Descargar modelo {selectedProfile.label} ({selectedProfile.displaySizeMiB} MiB)</button>}
+              {downloadConsentId && !downloadingModelId && (
                 <div className="consent-panel" role="dialog" aria-label="Confirmar descarga del modelo">
-                  <p><strong>¿Confirmas descargar el modelo?</strong></p>
-                  <p>La descarga sólo empieza con tu confirmación. El archivo permite el procesamiento local.</p>
-                  <div className="button-row"><button className="secondary-button" onClick={() => setDownloadConsent(false)} type="button">Ahora no</button><button className="primary-button" onClick={() => void confirmDownload()} type="button">Confirmar descarga</button></div>
+                  <p><strong>¿Confirmas descargar {MODEL_PROFILES.find((profile) => profile.id === downloadConsentId)?.label ?? "el perfil"}?</strong></p>
+                  <p>Perfil elegido: {MODEL_PROFILES.find((profile) => profile.id === downloadConsentId)?.label}. Tamaño: {MODEL_PROFILES.find((profile) => profile.id === downloadConsentId)?.displaySizeMiB} MiB.</p>
+                  <div className="button-row"><button className="secondary-button" onClick={() => setDownloadConsentId(null)} type="button">Ahora no</button><button className="primary-button" onClick={() => void confirmDownload()} type="button">Confirmar descarga</button></div>
                 </div>
               )}
-              {downloading && <div className="download-panel" role="status"><span>{downloadProgress?.message ?? "Conectando con el servidor…"}{downloadProgress?.percent === undefined ? "" : ` · ${downloadProgress.percent}%`}</span><button className="secondary-button" onClick={() => void cancelDownload()} type="button">Cancelar descarga</button></div>}
+              {downloadingModelId && <div className="download-panel" role="status"><span>{downloadProgressText ?? "Conectando con el servidor…"}</span><button className="secondary-button" onClick={() => void cancelDownload()} type="button">Cancelar descarga</button></div>}
             </>
           ) : (
             <>
@@ -397,8 +530,8 @@ export function OnboardingFlow({
             </>
           )}
           <div className="onboarding-actions">
-            <button className="primary-button" disabled={!canContinue} onClick={() => step === "model" ? setStep("setup") : void finish()} type="button">
-              {saving ? "Guardando…" : step === "model" ? "Continuar" : "Terminar configuración"}
+            <button className="primary-button" disabled={!canContinue} onClick={() => step === "model" ? void activateSelectedModel() : void finish()} type="button">
+              {saving ? "Guardando…" : activating ? "Activando…" : step === "model" ? "Continuar" : "Terminar configuración"}
             </button>
           </div>
         </section>
