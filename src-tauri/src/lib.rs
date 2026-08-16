@@ -381,7 +381,7 @@ fn parse_history_id(id: serde_json::Value) -> Result<i64, String> {
 fn send_to_clipboard(text: &str) -> Result<(), String> {
     let diagnosis = detect_platform();
     let command = match diagnosis.paste_method.as_str() {
-        "wl-clipboard" | "wl-clipboard+ydotool" => Some("wl-copy"),
+        "wl-clipboard" | "Extensión GNOME Shell Chamu" => Some("wl-copy"),
         "clipboard+xclip" => Some("xclip"),
         "clipboard+xsel" => Some("xsel"),
         _ if cfg!(windows) => Some("powershell.exe"),
@@ -1309,8 +1309,7 @@ fn test_paste() -> ClipboardCheck {
     let message = if ok {
         "El teclado virtual local está disponible.".into()
     } else if diagnosis.session == PlatformSession::Wayland && diagnosis.clipboard_available {
-        "El texto se copiará al portapapeles. Inicia ydotoold para pegar de forma automática."
-            .into()
+        "El texto se copiará al portapapeles. Pégalo manualmente en la ventana activa.".into()
     } else {
         "No se pudo detectar un método local para pegar en la aplicación activa.".into()
     };

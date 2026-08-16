@@ -949,37 +949,32 @@ where
         PlatformSession::Wayland => {
             let wl_copy = command_exists("wl-copy");
             let wl_paste = command_exists("wl-paste");
-            let ydotool = command_exists("ydotool");
             let wl_clipboard = wl_copy && wl_paste;
-            let mut missing = Vec::new();
-            if !wl_clipboard {
-                missing.push("wl-clipboard");
-            }
-            if !ydotool {
-                missing.push("ydotool");
-            }
-            let hint = distro_install_hint(&missing);
             dependencies.push(DependencyCheck {
                 name: "wl-clipboard (wl-copy/wl-paste)".into(),
                 available: wl_clipboard,
                 required: true,
-                install_hint: (!wl_clipboard).then(|| distro_install_hint(&["wl-clipboard"]).unwrap_or_default()),
+                install_hint: if compositor == Compositor::Gnome {
+                    None
+                } else {
+                    (!wl_clipboard)
+                        .then(|| distro_install_hint(&["wl-clipboard"]).unwrap_or_default())
+                },
             });
-            dependencies.push(DependencyCheck {
-                name: "ydotool".into(),
-                available: ydotool,
-                required: false,
-                install_hint: (!ydotool).then(|| distro_install_hint(&["ydotool"]).unwrap_or_default()),
-            });
-            let method = if wl_clipboard && ydotool {
-                "wl-clipboard+ydotool"
-            } else if wl_clipboard {
-                "wl-clipboard"
+            if compositor == Compositor::Gnome {
+                (
+                    wl_clipboard,
+                    wl_clipboard,
+                    "Extensión GNOME Shell Chamu".into(),
+                )
             } else {
-                "unavailable"
-            };
-            let _ = hint;
-            (wl_clipboard, wl_clipboard && ydotool, method.into())
+                let method = if wl_clipboard {
+                    "wl-clipboard"
+                } else {
+                    "unavailable"
+                };
+                (wl_clipboard, false, method.into())
+            }
         }
         PlatformSession::Unknown => (false, false, "unavailable".into()),
     };
@@ -1261,6 +1256,32 @@ mod tests {
     }
 
     #[test]
+    fn gnome_wayland_does_not_require_ydotool() {
+        let diagnosis = diagnose_platform_with(
+            PlatformEnvironment {
+                os: "linux",
+                session_type: Some("wayland"),
+                current_desktop: Some("GNOME"),
+                wayland_display: Some("wayland-0"),
+                x_display: None,
+            },
+            |_command| false,
+        );
+
+        assert_eq!(diagnosis.compositor, Compositor::Gnome);
+        assert_eq!(diagnosis.paste_method, "Extensión GNOME Shell Chamu");
+        assert!(!diagnosis
+            .dependencies
+            .iter()
+            .any(|item| item.name == "ydotool"));
+        assert!(diagnosis.dependencies.iter().all(|item| {
+            item.install_hint
+                .as_deref()
+                .map_or(true, |hint| !hint.contains("sudo"))
+        }));
+    }
+
+    #[test]
     fn unity_is_recognized_as_gnome() {
         assert_eq!(detect_compositor(Some("Unity")), Compositor::Gnome);
     }
@@ -1271,7 +1292,7 @@ mod tests {
             PlatformEnvironment {
                 os: "linux",
                 session_type: Some("wayland"),
-                current_desktop: Some("Unity"),
+                current_desktop: Some("Sway"),
                 wayland_display: Some("wayland-0"),
                 x_display: None,
             },
