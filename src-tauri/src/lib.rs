@@ -20,7 +20,7 @@ mod core;
 mod dictation;
 mod audio_adapter;
 mod audio_capture;
-mod wayland_paste;
+mod gnome_paste;
 mod wayland_shortcut;
 
 use core::{
@@ -745,9 +745,12 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
         );
         let mut message = "Texto copiado al portapapeles local".to_string();
         let mut pasted = false;
-        if detect_platform().session == PlatformSession::Wayland {
+        let diagnosis = detect_platform();
+        if diagnosis.session == PlatformSession::Wayland
+            && diagnosis.compositor == core::Compositor::Gnome
+        {
             let paste_started = Instant::now();
-            match wayland_paste::paste_with_ydotool() {
+            match gnome_paste::paste().await {
                 Ok(()) => {
                     eprintln!(
                         "Dictation Wayland paste took {} ms",
@@ -1433,6 +1436,24 @@ pub fn run() {
         })
         .setup(|app| {
             setup_tray(app)?;
+            let diagnosis = detect_platform();
+            if diagnosis.session == PlatformSession::Wayland
+                && diagnosis.compositor == core::Compositor::Gnome
+            {
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    gnome_paste::configure_resource_dir(resource_dir);
+                }
+                match gnome_paste::install_extension() {
+                    Ok(()) => {
+                        if let Err(error) = gnome_paste::enable_extension() {
+                            eprintln!("GNOME Shell extension enable skipped: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("GNOME Shell extension install skipped: {error}");
+                    }
+                }
+            }
             let whisper_context = Arc::clone(&app.state::<RuntimeState>().whisper_context);
             tauri::async_runtime::spawn_blocking(move || {
                 if let Err(error) = warm_whisper_context(&whisper_context) {

@@ -801,7 +801,7 @@ pub struct PlatformDiagnosis {
 
 fn detect_compositor(desktop: Option<&str>) -> Compositor {
     let desktop = desktop.unwrap_or_default().to_ascii_lowercase();
-    if desktop.contains("gnome") {
+    if desktop.contains("gnome") || desktop.split(':').any(|name| name == "unity") {
         Compositor::Gnome
     } else if desktop.contains("kde") || desktop.contains("plasma") {
         Compositor::Kde
@@ -1258,6 +1258,11 @@ mod tests {
         assert!(!diagnosis.clipboard_available);
         assert!(!diagnosis.paste_available);
         assert!(!diagnosis.hold_mode_supported);
+    }
+
+    #[test]
+    fn unity_is_recognized_as_gnome() {
+        assert_eq!(detect_compositor(Some("Unity")), Compositor::Gnome);
     }
 
     #[test]
