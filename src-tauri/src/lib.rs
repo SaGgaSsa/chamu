@@ -351,7 +351,6 @@ fn model_download_temp_path(destination: &Path) -> PathBuf {
 
 const DOWNLOAD_CANCELLED_MESSAGE: &str = "Descarga cancelada";
 const MODEL_OPERATION_BUSY_MESSAGE: &str = "El modelo está cambiando; inténtalo de nuevo";
-const MODEL_DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn model_download_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
     total_bytes
@@ -1438,12 +1437,9 @@ fn perform_model_download(
         return Err(DOWNLOAD_CANCELLED_MESSAGE.into());
     }
 
-    let client_builder: reqwest::blocking::ClientBuilder = reqwest::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .read_timeout(MODEL_DOWNLOAD_READ_TIMEOUT)
         .timeout(Duration::from_secs(60))
-        .into();
-    let client = client_builder
         .build()
         .map_err(|error| format!("No se pudo preparar la descarga: {error}"))?;
     let mut response = client
@@ -1902,9 +1898,34 @@ mod tests {
     }
 
     #[test]
-    fn model_download_read_timeout_is_shorter_than_total_timeout() {
-        assert_eq!(MODEL_DOWNLOAD_READ_TIMEOUT, Duration::from_secs(5));
-        assert!(MODEL_DOWNLOAD_READ_TIMEOUT < Duration::from_secs(60));
+    fn model_download_builder_is_blocking_and_builds_without_tokio_runtime() {
+        let build_result = thread::Builder::new()
+            .name("chamu-model-download-client-test".into())
+            .spawn(|| {
+                reqwest::blocking::Client::builder()
+                    .connect_timeout(Duration::from_secs(20))
+                    .timeout(Duration::from_secs(60))
+                    .build()
+            })
+            .expect("spawn model download client test")
+            .join()
+            .expect("model download client test must not panic");
+        assert!(
+            build_result.is_ok(),
+            "blocking client should build on a standard thread"
+        );
+
+        let source = include_str!("lib.rs");
+        let download_function = source
+            .split_once("fn perform_model_download(")
+            .and_then(|(_, source)| source.split_once("#[tauri::command]"))
+            .map(|(source, _)| source)
+            .expect("find model download implementation");
+        let async_builder = ["reqwest::", "Client::builder()"].concat();
+        assert!(!download_function.contains(&async_builder));
+        assert!(download_function.contains("reqwest::blocking::Client::builder()"));
+        assert!(!download_function.contains(".read_timeout("));
+        assert!(!download_function.contains(".into();"));
     }
 
     #[test]
