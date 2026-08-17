@@ -20,7 +20,9 @@ mod audio_adapter;
 mod audio_capture;
 mod core;
 mod dictation;
+#[cfg(target_os = "linux")]
 mod gnome_paste;
+#[cfg(target_os = "linux")]
 mod wayland_shortcut;
 
 use audio_capture::CaptureSessionHandle;
@@ -40,9 +42,13 @@ struct RuntimeState {
     downloads: DownloadController,
     diagnostics: Mutex<Vec<DiagnosticRecord>>,
     capture: Mutex<Option<CaptureSessionHandle>>,
+    #[cfg(target_os = "linux")]
     wayland_shortcut_task: Mutex<Option<wayland_shortcut::WaylandShortcutTask>>,
+    #[cfg(target_os = "linux")]
     wayland_shortcut_operation: tauri::async_runtime::Mutex<()>,
+    #[cfg(target_os = "linux")]
     wayland_shortcut_lifecycle: Mutex<wayland_shortcut::ShortcutLifecycleState>,
+    #[cfg(target_os = "linux")]
     wayland_shortcut_cleanup: Arc<Mutex<wayland_shortcut::ShortcutCleanupState>>,
     whisper_context: Arc<(Mutex<CachedWhisperContext>, Condvar)>,
     model_activation: tauri::async_runtime::Mutex<()>,
@@ -167,11 +173,15 @@ impl Default for RuntimeState {
             downloads: DownloadController::default(),
             diagnostics: Mutex::new(Vec::new()),
             capture: Mutex::new(None),
+            #[cfg(target_os = "linux")]
             wayland_shortcut_task: Mutex::new(None),
+            #[cfg(target_os = "linux")]
             wayland_shortcut_operation: tauri::async_runtime::Mutex::new(()),
+            #[cfg(target_os = "linux")]
             wayland_shortcut_lifecycle: Mutex::new(
                 wayland_shortcut::ShortcutLifecycleState::default(),
             ),
+            #[cfg(target_os = "linux")]
             wayland_shortcut_cleanup: Arc::new(Mutex::new(
                 wayland_shortcut::ShortcutCleanupState::default(),
             )),
@@ -983,19 +993,23 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
         if diagnosis.session == PlatformSession::Wayland
             && diagnosis.compositor == core::Compositor::Gnome
         {
-            let paste_started = Instant::now();
-            match gnome_paste::paste().await {
-                Ok(()) => {
-                    eprintln!(
-                        "Dictation Wayland paste took {} ms",
-                        paste_started.elapsed().as_millis()
-                    );
-                    message = "Texto pegado en la ventana activa".into();
-                    pasted = true;
-                }
-                Err(error) => {
-                    message =
-                        format!("Texto copiado al portapapeles local. Pégalo manualmente: {error}");
+            #[cfg(target_os = "linux")]
+            {
+                let paste_started = Instant::now();
+                match gnome_paste::paste().await {
+                    Ok(()) => {
+                        eprintln!(
+                            "Dictation Wayland paste took {} ms",
+                            paste_started.elapsed().as_millis()
+                        );
+                        message = "Texto pegado en la ventana activa".into();
+                        pasted = true;
+                    }
+                    Err(error) => {
+                        message = format!(
+                            "Texto copiado al portapapeles local. Pégalo manualmente: {error}"
+                        );
+                    }
                 }
             }
         }
@@ -1589,22 +1603,28 @@ fn cancel_model_download(
 async fn diagnose_platform() -> PlatformDiagnosis {
     let mut diagnosis = detect_platform();
     if diagnosis.session == PlatformSession::Wayland {
-        let available = wayland_shortcut::probe_portal().await.is_ok();
-        diagnosis.wayland_portal_available = Some(available);
-        diagnosis.shortcut_method = if available {
-            "xdg-global-shortcuts-portal".into()
-        } else {
-            "xdg-global-shortcuts-portal (no disponible)".into()
-        };
-        diagnosis.hold_mode_supported = available;
-        diagnosis.dependencies.push(core::DependencyCheck {
-            name: "Portal XDG GlobalShortcuts".into(),
-            available,
-            required: false,
-            install_hint: None,
-        });
+        #[cfg(target_os = "linux")]
+        wayland_portal_diagnosis(&mut diagnosis).await;
     }
     diagnosis
+}
+
+#[cfg(target_os = "linux")]
+async fn wayland_portal_diagnosis(diagnosis: &mut PlatformDiagnosis) {
+    let available = wayland_shortcut::probe_portal().await.is_ok();
+    diagnosis.wayland_portal_available = Some(available);
+    diagnosis.shortcut_method = if available {
+        "xdg-global-shortcuts-portal".into()
+    } else {
+        "xdg-global-shortcuts-portal (no disponible)".into()
+    };
+    diagnosis.hold_mode_supported = available;
+    diagnosis.dependencies.push(core::DependencyCheck {
+        name: "Portal XDG GlobalShortcuts".into(),
+        available,
+        required: false,
+        install_hint: None,
+    });
 }
 
 #[tauri::command]
@@ -1791,7 +1811,9 @@ pub fn run() {
             test_paste,
             record_diagnostic,
             get_diagnostics,
+            #[cfg(target_os = "linux")]
             wayland_shortcut::configure_wayland_hold_shortcut,
+            #[cfg(target_os = "linux")]
             wayland_shortcut::clear_wayland_hold_shortcut,
             show_main_window
         ])
@@ -1810,22 +1832,25 @@ pub fn run() {
             if diagnosis.session == PlatformSession::Wayland
                 && diagnosis.compositor == core::Compositor::Gnome
             {
-                let resource_dir = app.path().resource_dir().ok();
-                spawn_gnome_extension_setup(resource_dir, |resource_dir| {
-                    if let Some(resource_dir) = resource_dir {
-                        gnome_paste::configure_resource_dir(resource_dir);
-                    }
-                    match gnome_paste::install_extension() {
-                        Ok(()) => {
-                            if let Err(error) = gnome_paste::enable_extension() {
-                                eprintln!("GNOME Shell extension enable skipped: {error}");
+                #[cfg(target_os = "linux")]
+                {
+                    let resource_dir = app.path().resource_dir().ok();
+                    spawn_gnome_extension_setup(resource_dir, |resource_dir| {
+                        if let Some(resource_dir) = resource_dir {
+                            gnome_paste::configure_resource_dir(resource_dir);
+                        }
+                        match gnome_paste::install_extension() {
+                            Ok(()) => {
+                                if let Err(error) = gnome_paste::enable_extension() {
+                                    eprintln!("GNOME Shell extension enable skipped: {error}");
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("GNOME Shell extension install skipped: {error}");
                             }
                         }
-                        Err(error) => {
-                            eprintln!("GNOME Shell extension install skipped: {error}");
-                        }
-                    }
-                });
+                    });
+                }
             }
             let whisper_context = Arc::clone(&app.state::<RuntimeState>().whisper_context);
             if let Ok(path) = settings_path() {
