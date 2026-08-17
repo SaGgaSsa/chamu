@@ -96,7 +96,7 @@ describe("ModelSelector", () => {
     await waitFor(() => expect(screen.getByRole("radio", { name: /liviano/i })).toBeEnabled());
     fireEvent.click(screen.getByRole("radio", { name: /liviano/i }));
 
-    expect(bridge.activateModel).toHaveBeenCalledWith("base");
+    await waitFor(() => expect(bridge.activateModel).toHaveBeenCalledWith("base"));
     expect(screen.getByRole("radio", { name: /liviano/i })).toBeDisabled();
     expect(onModelActivated).not.toHaveBeenCalled();
 
@@ -104,7 +104,55 @@ describe("ModelSelector", () => {
     await waitFor(() => expect(onModelActivated).toHaveBeenCalledWith("base"));
   });
 
-  it("requires confirmation, reports progress, and does not activate after download", async () => {
+  it("blocks the screen with a loading overlay while the model loads", async () => {
+    let resolveActivation: (() => void) | undefined;
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async (modelId = "small") => status(modelId, {
+        installed: true,
+        checksumValid: true,
+        active: modelId === "small",
+      })),
+      activateModel: vi.fn(() => new Promise<void>((resolve) => {
+        resolveActivation = resolve;
+      })),
+    });
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("radio", { name: /liviano/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("radio", { name: /liviano/i }));
+
+    await waitFor(() => expect(screen.getByText(/cargando modelo liviano/i)).toBeVisible());
+    const overlay = screen.getByText(/cargando modelo liviano/i).closest("[role='status']");
+    expect(overlay).not.toBeNull();
+    expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeDisabled();
+
+    resolveActivation?.();
+    await waitFor(() => expect(screen.queryByText(/cargando modelo liviano/i)).toBeNull());
+  });
+
+  it("checks and activates an inactive model only when it is selected", async () => {
+    const bridge = makeBridge({
+      inspectModel: vi.fn(async (modelId = "small") => status(modelId, {
+        installed: true,
+        checksumValid: true,
+        active: modelId === "small",
+      })),
+    });
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getAllByText("Activo").length).toBeGreaterThan(0));
+    expect(bridge.inspectModel).toHaveBeenCalledTimes(1);
+    expect(bridge.inspectModel).toHaveBeenCalledWith("small");
+    expect(screen.queryByText("Instalado")).toBeNull();
+    expect(screen.queryByText(/comprobando estado/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("radio", { name: /liviano/i }));
+    await waitFor(() => expect(bridge.inspectModel).toHaveBeenCalledWith("base"));
+    await waitFor(() => expect(screen.getAllByText("Activo").length).toBeGreaterThan(1));
+    expect(screen.getAllByText("Instalado")[0]).toBeVisible();
+  });
+
+  it("requires confirmation, reports progress, and does not activate during download", async () => {
     let progressListener: ((progress: ModelDownloadProgress) => void) | undefined;
     const missing = (modelId = "small") => status(modelId, {
       installed: modelId !== "large-v3-turbo-q5_0",
@@ -122,7 +170,7 @@ describe("ModelSelector", () => {
 
     await waitFor(() => expect(screen.getByRole("radio", { name: /calidad/i })).toBeEnabled());
     fireEvent.click(screen.getByRole("radio", { name: /calidad/i }));
-    fireEvent.click(screen.getByRole("button", { name: /descargar modelo calidad/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /descargar modelo calidad/i }));
     expect(bridge.startModelDownload).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog", { name: /confirmar descarga/i })).toHaveTextContent("547 MiB");
 
@@ -140,10 +188,10 @@ describe("ModelSelector", () => {
       });
     });
     expect(screen.getByText(/descargando modelo.*10%/i)).toBeVisible();
-    expect(screen.queryByRole("button", { name: /activar/i })).toBeNull();
+    expect(bridge.activateModel).not.toHaveBeenCalled();
   });
 
-  it("refreshes the profile that completed its download", async () => {
+  it("refreshes the profile that completed its download and activates it immediately", async () => {
     let progressListener: ((progress: ModelDownloadProgress) => void) | undefined;
     let largeInspectionCount = 0;
     const bridge = makeBridge({
@@ -163,7 +211,8 @@ describe("ModelSelector", () => {
         return () => undefined;
       }),
     });
-    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
+    const onModelActivated = vi.fn();
+    render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={onModelActivated} />);
 
     fireEvent.click(await screen.findByRole("radio", { name: /calidad/i }));
     fireEvent.click(await screen.findByRole("button", { name: /descargar modelo calidad/i }));
@@ -182,11 +231,12 @@ describe("ModelSelector", () => {
     });
 
     await waitFor(() => expect(bridge.inspectModel).toHaveBeenCalledWith("large-v3-turbo-q5_0"));
-    await waitFor(() => expect(screen.getByText("Instalado y validado")).toBeVisible());
+    await waitFor(() => expect(bridge.activateModel).toHaveBeenCalledWith("large-v3-turbo-q5_0"));
+    await waitFor(() => expect(onModelActivated).toHaveBeenCalledWith("large-v3-turbo-q5_0"));
     expect(largeInspectionCount).toBeGreaterThan(1);
   });
 
-  it("shows checksum and status errors from inspection", async () => {
+  it("shows checksum and status errors only for the models it checks", async () => {
     const bridge = makeBridge({
       inspectModel: vi.fn(async (modelId = "small") => status(modelId, modelId === "base"
         ? { installed: true, checksumValid: false }
@@ -194,8 +244,11 @@ describe("ModelSelector", () => {
     });
     render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
 
+    await waitFor(() => expect(screen.getAllByText("Error: No se pudo comprobar el archivo")[0]).toBeVisible());
+    expect(screen.queryByText("Checksum inválido")).toBeNull();
+
+    fireEvent.click(screen.getByRole("radio", { name: /liviano/i }));
     await waitFor(() => expect(screen.getByText("Checksum inválido")).toBeVisible());
-    expect(screen.getAllByText("Error: No se pudo comprobar el archivo")[0]).toBeVisible();
   });
 
   it("preserves the previous active profile when activation fails", async () => {
@@ -219,7 +272,7 @@ describe("ModelSelector", () => {
     await waitFor(() => expect(screen.getByText("No se pudo activar el modelo")).toBeVisible());
     expect(previous).toBeChecked();
     expect(candidate).not.toBeChecked();
-    expect(screen.getByText("Activo · instalado y validado")).toBeVisible();
+    expect(screen.getAllByText("Activo").length).toBeGreaterThan(0);
     expect(onModelActivated).not.toHaveBeenCalled();
   });
 
@@ -264,9 +317,9 @@ describe("ModelSelector", () => {
       <ModelSelector bridge={oldBridge} selectedModelId="small" onModelActivated={vi.fn()} />,
     );
 
-    await waitFor(() => expect(Object.keys(oldResolvers)).toHaveLength(3));
+    await waitFor(() => expect(Object.keys(oldResolvers)).toHaveLength(1));
     rendered.rerender(<ModelSelector bridge={newBridge} selectedModelId="small" onModelActivated={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText("Activo · instalado y validado")).toBeVisible());
+    await waitFor(() => expect(screen.getAllByText("Activo").length).toBeGreaterThan(0));
 
     await act(async () => {
       Object.values(oldResolvers).forEach((resolve) => resolve(status("small", {
@@ -275,6 +328,6 @@ describe("ModelSelector", () => {
     });
 
     expect(screen.queryByText(/respuesta antigua/i)).toBeNull();
-    expect(screen.getByText("Activo · instalado y validado")).toBeVisible();
+    expect(screen.getAllByText("Activo").length).toBeGreaterThan(0);
   });
 });

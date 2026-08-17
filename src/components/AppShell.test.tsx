@@ -196,7 +196,7 @@ describe("AppShell", () => {
     expect(bridge.loadHistory).not.toHaveBeenCalled();
   });
 
-  it("keeps only language controls and onboarding reset in settings", async () => {
+  it("keeps language, model, and onboarding reset controls in settings", async () => {
     const bridge = makeBridge();
     const onRestartOnboarding = vi.fn();
     render(<AppShell bridge={bridge} onRestartOnboarding={onRestartOnboarding} />);
@@ -205,6 +205,7 @@ describe("AppShell", () => {
     const dialog = screen.getByRole("dialog", { name: /configuración/i });
     expect(dialog).toBeVisible();
     expect(within(dialog).getByRole("radio", { name: /english/i })).toBeVisible();
+    expect(within(dialog).getByRole("radio", { name: /calidad/i })).toBeVisible();
     expect(within(dialog).queryByRole("radio", { name: /pulsar para alternar|mantener pulsado/i })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: /capturar atajo/i })).toBeNull();
     fireEvent.click(within(dialog).getByRole("radio", { name: /english/i }));
@@ -216,22 +217,29 @@ describe("AppShell", () => {
     expect(onRestartOnboarding).toHaveBeenCalledOnce();
   });
 
-  it("shows the active model and its local validation states beside the dictation tester", async () => {
+  it("shows the active model only inside settings", async () => {
     const bridge = makeBridge();
     render(<AppShell bridge={bridge} />);
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible());
-    expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeChecked();
-    expect(screen.getByText(/activo.*instalado y validado/i)).toBeVisible();
-    expect(screen.getByText(/liviano.*142 MiB/i)).toBeVisible();
+    await waitFor(() => expect(screen.getByText("Micrófono activo: Micrófono USB")).toBeVisible());
+    expect(screen.queryByRole("radio", { name: /predeterminado/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    const dialog = screen.getByRole("dialog", { name: /configuración/i });
+    await waitFor(() => expect(within(dialog).getByRole("radio", { name: /predeterminado/i })).toBeVisible());
+    expect(within(dialog).getByRole("radio", { name: /predeterminado/i })).toBeChecked();
+    expect(within(dialog).getAllByText(/activo/i).length).toBeGreaterThan(0);
+    expect(within(dialog).getByText(/liviano.*142 MiB/i)).toBeVisible();
   });
 
   it("disables model controls while dictation is recording", async () => {
     const bridge = makeBridge();
     render(<AppShell bridge={bridge} recordingState={{ status: "recording" }} />);
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeDisabled());
-    expect(screen.getByText(/selector bloqueado/i)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    const dialog = screen.getByRole("dialog", { name: /configuración/i });
+    await waitFor(() => expect(within(dialog).getByRole("radio", { name: /predeterminado/i })).toBeDisabled());
+    expect(within(dialog).getByText(/selector bloqueado/i)).toBeVisible();
   });
 
   it("keeps the previous model selected when activation fails", async () => {
@@ -242,13 +250,35 @@ describe("AppShell", () => {
     });
     render(<AppShell bridge={bridge} />);
 
-    const previous = await screen.findByRole("radio", { name: /predeterminado/i });
-    const candidate = screen.getByRole("radio", { name: /liviano/i });
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    const dialog = screen.getByRole("dialog", { name: /configuración/i });
+    const previous = await within(dialog).findByRole("radio", { name: /predeterminado/i });
+    const candidate = within(dialog).getByRole("radio", { name: /liviano/i });
     fireEvent.click(candidate);
 
     await waitFor(() => expect(screen.getByText("No se pudo activar el modelo")).toBeVisible());
     expect(previous).toBeChecked();
     expect(candidate).not.toBeChecked();
+  });
+
+  it("blocks the whole screen while the model loads", async () => {
+    let resolveActivation: (() => void) | undefined;
+    const bridge = makeBridge({
+      activateModel: vi.fn(() => new Promise<void>((resolve) => {
+        resolveActivation = resolve;
+      })),
+    });
+    render(<AppShell bridge={bridge} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    const dialog = screen.getByRole("dialog", { name: /configuración/i });
+    fireEvent.click(await within(dialog).findByRole("radio", { name: /liviano/i }));
+
+    await waitFor(() => expect(screen.getByText(/cargando modelo liviano/i)).toBeVisible());
+    expect(dialog.querySelector(".model-loading-overlay")).not.toBeNull();
+
+    resolveActivation?.();
+    await waitFor(() => expect(screen.queryByText(/cargando modelo liviano/i)).toBeNull());
   });
 
   it("saves mode and shortcut changes made in the dictation tester", async () => {

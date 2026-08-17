@@ -3,12 +3,12 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MODEL_BASE_SHA256: &str =
@@ -323,6 +323,46 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex_digest(&hasher.finalize()))
 }
 
+struct CachedChecksum {
+    size_bytes: u64,
+    modified: SystemTime,
+    sha256: String,
+}
+
+fn checksum_cache() -> &'static Mutex<HashMap<PathBuf, CachedChecksum>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedChecksum>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns the SHA-256 of a model file, reusing the last digest when the file
+/// is unchanged. Model files are only replaced through an atomic rename, so a
+/// matching size and modification time is enough to trust the cached digest.
+/// This keeps repeated status inspections and activations free of rehashing.
+pub fn cached_sha256_file(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+    let size_bytes = metadata.len();
+    if let Ok(cache) = checksum_cache().lock() {
+        if let Some(entry) = cache.get(path) {
+            if entry.size_bytes == size_bytes && entry.modified == modified {
+                return Ok(entry.sha256.clone());
+            }
+        }
+    }
+    let sha256 = sha256_file(path)?;
+    if let Ok(mut cache) = checksum_cache().lock() {
+        cache.insert(
+            path.to_path_buf(),
+            CachedChecksum {
+                size_bytes,
+                modified,
+                sha256: sha256.clone(),
+            },
+        );
+    }
+    Ok(sha256)
+}
+
 fn hex_digest(bytes: &[u8]) -> String {
     let mut result = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -350,7 +390,7 @@ pub fn validate_model_checksum(
     if !metadata.is_file() {
         return Err("La ruta del modelo no es un archivo".into());
     }
-    let actual = sha256_file(path)?;
+    let actual = cached_sha256_file(path)?;
     Ok(ModelValidation {
         path: path.to_string_lossy().into_owned(),
         size_bytes: metadata.len(),
@@ -476,7 +516,7 @@ pub fn discover_models_in_dirs(directories: &[PathBuf]) -> Result<Vec<LocalModel
                 continue;
             };
             let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
-            let actual = sha256_file(&canonical)?;
+            let actual = cached_sha256_file(&canonical)?;
             let expected = Some(known.sha256.clone());
             let is_valid = expected.as_ref().map(|value| value == &actual);
             models.push(LocalModel {

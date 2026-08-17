@@ -578,8 +578,7 @@ export function AppShell({
           </p>
           <StatusBubble state={currentRecordingState} />
         </section>
-        <div className="main-model-grid">
-          <DictationTester
+        <DictationTester
             ref={testerRef}
             settings={currentSettings}
             onSettingsChange={handleTesterSettingsChange}
@@ -597,17 +596,6 @@ export function AppShell({
             onShortcutRegistrationError={(message) => setShortcutRegistrationError(message ?? null)}
             onCapturingChange={setShortcutCaptureActive}
           />
-          <ModelSelector
-            bridge={activeBridge}
-            disabled={
-              dictationActionPending
-              || dictationStarting
-              || isBusyRecordingState(currentRecordingState)
-            }
-            onModelActivated={handleModelActivated}
-            selectedModelId={currentSettings.modelId}
-          />
-        </div>
         {settingsSaveError && <p className="error-message" role="alert">{settingsSaveError}</p>}
       </div>
 
@@ -631,6 +619,16 @@ export function AppShell({
               <span><strong>English</strong><small>Interfaz y dictado en inglés</small></span>
             </label>
           </fieldset>
+          <ModelSelector
+            bridge={activeBridge}
+            disabled={
+              dictationActionPending
+              || dictationStarting
+              || isBusyRecordingState(currentRecordingState)
+            }
+            onModelActivated={handleModelActivated}
+            selectedModelId={currentSettings.modelId}
+          />
           {settingsError && <p className="error-message">{settingsError}</p>}
           <div className="settings-panel__actions">
             <button className="secondary-button" onClick={() => setSettingsOpen(false)} type="button">Cancelar</button>

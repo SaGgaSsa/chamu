@@ -60,13 +60,16 @@ function statusLabel(
   statusError: string | undefined,
   downloadId: string | null,
   progress: ModelDownloadProgress | null,
+  inspectingId: string | null,
 ): string {
   if (downloadId === profile.id) {
     const percent = progress?.percent === undefined ? "" : ` · ${progress.percent}%`;
     return `Descarga en curso${percent}`;
   }
   if (statusError) return `Error: ${statusError}`;
-  if (!status) return "Comprobando estado…";
+  if (!status) {
+    return profile.id === inspectingId ? "Comprobando estado…" : "";
+  }
   if (status.error) {
     return status.installed && !status.checksumValid
       ? `Checksum inválido · Error: ${status.error}`
@@ -74,7 +77,7 @@ function statusLabel(
   }
   if (status.installed && !status.checksumValid) return "Checksum inválido";
   if (status.installed && status.checksumValid) {
-    return status.active ? "Activo · instalado y validado" : "Instalado y validado";
+    return status.active ? "Activo" : "Instalado";
   }
   if (status.installed) return "Checksum inválido";
   return "Descargable";
@@ -98,6 +101,7 @@ export function ModelSelector({
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [downloadConsentId, setDownloadConsentId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [inspectingId, setInspectingId] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const downloadListenerRef = useRef<DownloadListener | null>(null);
   const downloadTokenRef = useRef<symbol | null>(null);
@@ -105,10 +109,12 @@ export function ModelSelector({
   const disposedRef = useRef(false);
   const bridgeRef = useRef(bridge);
   const bridgeGenerationRef = useRef(0);
+  const selectedModelIdRef = useRef(selectedModelId);
 
   useEffect(() => {
     setSelectedId(selectedModelId);
     confirmedIdRef.current = selectedModelId;
+    selectedModelIdRef.current = selectedModelId;
   }, [selectedModelId]);
 
   function releaseDownloadListener(token?: symbol) {
@@ -141,10 +147,10 @@ export function ModelSelector({
     id: string,
     expectedBridge = bridgeRef.current,
     generation = bridgeGenerationRef.current,
-  ): Promise<void> {
+  ): Promise<ModelStatus | null> {
     try {
       const status = await expectedBridge.inspectModel(id);
-      if (!isCurrentBridge(expectedBridge, generation)) return;
+      if (!isCurrentBridge(expectedBridge, generation)) return null;
       setStatuses((current) => ({ ...current, [id]: status }));
       setStatusErrors((current) => {
         if (!(id in current)) return current;
@@ -152,12 +158,14 @@ export function ModelSelector({
         delete next[id];
         return next;
       });
+      return status;
     } catch (error: unknown) {
-      if (!isCurrentBridge(expectedBridge, generation)) return;
+      if (!isCurrentBridge(expectedBridge, generation)) return null;
       setStatusErrors((current) => ({
         ...current,
         [id]: getErrorMessage(error, "No se pudo comprobar el modelo"),
       }));
+      return null;
     }
   }
 
@@ -178,6 +186,7 @@ export function ModelSelector({
     setDownloadProgress(null);
     setDownloadConsentId(null);
     setActivatingId(null);
+    setInspectingId(null);
     setOperationError(null);
 
     function isCurrent(): boolean {
@@ -214,7 +223,7 @@ export function ModelSelector({
           ? `El catálogo de modelos está incompleto. Falta: ${missing.join(", ")}.`
           : null,
       );
-      await Promise.all(MODEL_PROFILES.map((profile) => inspectForGeneration(profile.id)));
+      await inspectForGeneration(selectedModelIdRef.current);
     }).catch((error: unknown) => {
       if (!isCurrent()) return;
       setCatalogLoaded(true);
@@ -258,6 +267,7 @@ export function ModelSelector({
       setDownloadId(null);
       setDownloadConsentId(null);
       await refreshProfile(progress.modelId, expectedBridge, generation);
+      await activate(progress.modelId, expectedBridge, generation);
     }
   }
 
@@ -320,10 +330,12 @@ export function ModelSelector({
     }
   }
 
-  async function activate(id: string) {
-    if (disabled || downloadId !== null || activatingId !== null) return;
-    const expectedBridge = bridgeRef.current;
-    const generation = bridgeGenerationRef.current;
+  async function activate(
+    id: string,
+    expectedBridge = bridgeRef.current,
+    generation = bridgeGenerationRef.current,
+  ) {
+    if (disabled || activatingId !== null) return;
     const previousId = confirmedIdRef.current;
     setActivatingId(id);
     setOperationError(null);
@@ -369,9 +381,17 @@ export function ModelSelector({
       delete next[id];
       return next;
     });
-    const status = statuses[id];
-    if (statusIsReady(status) && !status.active) {
-      await activate(id);
+    const known = statuses[id];
+    if (known) {
+      if (statusIsReady(known) && !known.active) await activate(id);
+      return;
+    }
+    setInspectingId(id);
+    try {
+      const status = await inspectProfile(id);
+      if (status && statusIsReady(status) && !status.active) await activate(id);
+    } finally {
+      setInspectingId((current) => (current === id ? null : current));
     }
   }
 
@@ -380,7 +400,6 @@ export function ModelSelector({
   const selectorBusy = disabled || downloadId !== null || activatingId !== null;
   const selectedReady = statusIsReady(selectedStatus);
   const selectedActive = Boolean(selectedStatus?.active);
-  const canActivate = selectedReady && !selectedActive && !selectorBusy;
 
   return (
     <section className="model-selector" aria-label="Selector de modelo">
@@ -411,7 +430,7 @@ export function ModelSelector({
                   <strong>{profile.label} · {profile.displaySizeMiB} MiB</strong>
                   <small>{profile.id}</small>
                   <small data-model-status={profile.id}>
-                    {statusLabel(profile, status, statusErrors[profile.id], downloadId, downloadProgress)}
+                    {statusLabel(profile, status, statusErrors[profile.id], downloadId, downloadProgress, inspectingId)}
                   </small>
                 </span>
               </label>
@@ -443,13 +462,13 @@ export function ModelSelector({
           </div>
         </div>
       )}
-      {canActivate && (
-        <button className="primary-button model-selector__activate-button" onClick={() => void activate(selectedId)} type="button">
-          Activar {selectedProfile.label}
-        </button>
-      )}
-      {activatingId && <p className="model-selector__message" role="status">Activando {profileFor(activatingId).label}…</p>}
       {operationError && <p className="error-message" role="alert">{operationError}</p>}
+      {activatingId && (
+        <div className="model-loading-overlay" role="status" aria-live="polite">
+          <span aria-hidden="true" className="model-loading-overlay__spinner" />
+          <p>Cargando modelo {profileFor(activatingId).label}…</p>
+        </div>
+      )}
     </section>
   );
 }
