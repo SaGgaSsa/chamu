@@ -741,6 +741,11 @@ fn transcribe_with_embedded_whisper(
             .create_state()
             .map_err(|error| format!("No se pudo preparar whisper.cpp: {error}"))?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        let thread_count = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get() as i32)
+            .unwrap_or(4);
+        params.set_n_threads(thread_count);
+        eprintln!("Whisper inference using {} threads", thread_count);
         params.set_language(Some(language));
         params.set_translate(false);
         params.set_print_special(false);
