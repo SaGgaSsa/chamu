@@ -84,21 +84,27 @@ describe("OnboardingFlow", () => {
     await waitFor(() => expect(screen.getByRole("radio", { name: /liviano/i })).toBeVisible());
     expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /calidad/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /rápido/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /balanceado/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /máximo/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /español/i })).toBeChecked();
     fireEvent.click(screen.getByRole("radio", { name: /english/i }));
     expect(screen.getByRole("radio", { name: /english/i })).toBeChecked();
     await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
   });
 
-  it("keeps all three profiles visible when the catalog is incomplete", async () => {
+  it("keeps all six profiles visible when the catalog is incomplete", async () => {
     const bridge = makeBridge({
       getModelCatalog: vi.fn(async () => []),
     });
     render(<OnboardingFlow bridge={bridge} onComplete={vi.fn()} />);
 
-    expect(await screen.findByRole("radio", { name: /liviano/i })).toBeVisible();
+    expect(await screen.findByRole("radio", { name: /rápido/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /liviano/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /balanceado/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /calidad/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /máximo/i })).toBeVisible();
     expect(await screen.findByRole("alert")).toHaveTextContent(/catálogo.*incompleto/i);
   });
 
@@ -372,7 +378,7 @@ describe("OnboardingFlow", () => {
     const newBridge = makeBridge();
     const rendered = render(<OnboardingFlow bridge={oldBridge} onComplete={vi.fn()} />);
 
-    await waitFor(() => expect(Object.keys(oldResolvers)).toHaveLength(3));
+    await waitFor(() => expect(Object.keys(oldResolvers)).toHaveLength(6));
     rendered.rerender(<OnboardingFlow bridge={newBridge} onComplete={vi.fn()} />);
     await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
 

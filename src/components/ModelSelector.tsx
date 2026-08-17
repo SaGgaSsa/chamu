@@ -14,10 +14,15 @@ export interface ModelProfile {
 
 /** The model list is intentionally closed and follows the native catalog order. */
 export const MODEL_PROFILES: readonly ModelProfile[] = [
+  { id: "tiny-q8_0", label: "Rápido", displaySizeMiB: 42 },
   { id: "base", label: "Liviano", displaySizeMiB: 142 },
+  { id: "small-q8_0", label: "Balanceado", displaySizeMiB: 252 },
   { id: "small", label: "Predeterminado", displaySizeMiB: 466 },
   { id: "large-v3-turbo-q5_0", label: "Calidad", displaySizeMiB: 547 },
+  { id: "large-v3-turbo-q8_0", label: "Máximo", displaySizeMiB: 834 },
 ];
+
+export const DEFAULT_MODEL_ID = "small";
 
 export interface ModelSelectorProps {
   bridge: ChamuBridge;
@@ -37,7 +42,11 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 function profileFor(id: string): ModelProfile {
-  return MODEL_PROFILES.find((profile) => profile.id === id) ?? MODEL_PROFILES[1];
+  return (
+    MODEL_PROFILES.find((profile) => profile.id === id)
+    ?? MODEL_PROFILES.find((profile) => profile.id === DEFAULT_MODEL_ID)
+    ?? MODEL_PROFILES[0]
+  );
 }
 
 function metadataFor(profile: ModelProfile, catalog: readonly ModelMetadata[]): ModelMetadata | undefined {

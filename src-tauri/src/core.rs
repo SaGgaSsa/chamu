@@ -16,6 +16,16 @@ pub const MODEL_BASE_SHA256: &str =
 pub const MODEL_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
 pub const MODEL_BASE_SIZE_BYTES: u64 = 147_951_465;
+pub const MODEL_TINY_Q8_0_SHA256: &str =
+    "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca";
+pub const MODEL_TINY_Q8_0_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin";
+pub const MODEL_TINY_Q8_0_SIZE_BYTES: u64 = 43_537_433;
+pub const MODEL_SMALL_Q8_0_SHA256: &str =
+    "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f";
+pub const MODEL_SMALL_Q8_0_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin";
+pub const MODEL_SMALL_Q8_0_SIZE_BYTES: u64 = 264_464_607;
 pub const MODEL_SMALL_SHA256: &str =
     "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b";
 pub const MODEL_SMALL_URL: &str =
@@ -26,6 +36,11 @@ pub const MODEL_LARGE_V3_TURBO_Q5_0_SHA256: &str =
 pub const MODEL_LARGE_V3_TURBO_Q5_0_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 pub const MODEL_LARGE_V3_TURBO_Q5_0_SIZE_BYTES: u64 = 574_041_195;
+pub const MODEL_LARGE_V3_TURBO_Q8_0_SHA256: &str =
+    "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1";
+pub const MODEL_LARGE_V3_TURBO_Q8_0_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin";
+pub const MODEL_LARGE_V3_TURBO_Q8_0_SIZE_BYTES: u64 = 874_188_075;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -253,6 +268,7 @@ pub fn now_unix_millis() -> i64 {
 #[serde(rename_all = "camelCase")]
 pub struct ModelMetadata {
     pub id: String,
+    pub name: String,
     pub label: String,
     pub filename: String,
     pub language: String,
@@ -264,7 +280,18 @@ pub struct ModelMetadata {
 pub fn model_catalog() -> Vec<ModelMetadata> {
     vec![
         ModelMetadata {
+            id: "tiny-q8_0".into(),
+            name: "Whisper Tiny multilingüe".into(),
+            label: "Rápido".into(),
+            filename: "ggml-tiny-q8_0.bin".into(),
+            language: "multilingual".into(),
+            size_bytes: MODEL_TINY_Q8_0_SIZE_BYTES,
+            sha256: MODEL_TINY_Q8_0_SHA256.into(),
+            download_url: MODEL_TINY_Q8_0_URL.into(),
+        },
+        ModelMetadata {
             id: "base".into(),
+            name: "Whisper base multilingüe".into(),
             label: "Liviano".into(),
             filename: "ggml-base.bin".into(),
             language: "multilingual".into(),
@@ -273,7 +300,18 @@ pub fn model_catalog() -> Vec<ModelMetadata> {
             download_url: MODEL_BASE_URL.into(),
         },
         ModelMetadata {
+            id: "small-q8_0".into(),
+            name: "Whisper Small cuantizado".into(),
+            label: "Balanceado".into(),
+            filename: "ggml-small-q8_0.bin".into(),
+            language: "multilingual".into(),
+            size_bytes: MODEL_SMALL_Q8_0_SIZE_BYTES,
+            sha256: MODEL_SMALL_Q8_0_SHA256.into(),
+            download_url: MODEL_SMALL_Q8_0_URL.into(),
+        },
+        ModelMetadata {
             id: "small".into(),
+            name: "Whisper small multilingüe".into(),
             label: "Predeterminado".into(),
             filename: "ggml-small.bin".into(),
             language: "multilingual".into(),
@@ -283,12 +321,23 @@ pub fn model_catalog() -> Vec<ModelMetadata> {
         },
         ModelMetadata {
             id: "large-v3-turbo-q5_0".into(),
+            name: "Whisper Large v3 Turbo".into(),
             label: "Calidad".into(),
             filename: "ggml-large-v3-turbo-q5_0.bin".into(),
             language: "multilingual".into(),
             size_bytes: MODEL_LARGE_V3_TURBO_Q5_0_SIZE_BYTES,
             sha256: MODEL_LARGE_V3_TURBO_Q5_0_SHA256.into(),
             download_url: MODEL_LARGE_V3_TURBO_Q5_0_URL.into(),
+        },
+        ModelMetadata {
+            id: "large-v3-turbo-q8_0".into(),
+            name: "Whisper Large v3 Turbo cuantizado".into(),
+            label: "Máximo".into(),
+            filename: "ggml-large-v3-turbo-q8_0.bin".into(),
+            language: "multilingual".into(),
+            size_bytes: MODEL_LARGE_V3_TURBO_Q8_0_SIZE_BYTES,
+            sha256: MODEL_LARGE_V3_TURBO_Q8_0_SHA256.into(),
+            download_url: MODEL_LARGE_V3_TURBO_Q8_0_URL.into(),
         },
     ]
 }
@@ -1265,45 +1314,90 @@ mod tests {
     #[test]
     fn model_catalog_exposes_the_closed_whisper_selection() {
         let catalog = serde_json::to_value(model_catalog()).expect("serialize model catalog");
-        assert_eq!(catalog.as_array().expect("catalog array").len(), 3);
+        assert_eq!(catalog.as_array().expect("catalog array").len(), 6);
 
-        assert_eq!(catalog[0]["id"], "base");
-        assert_eq!(catalog[0]["label"], "Liviano");
-        assert_eq!(catalog[0]["filename"], "ggml-base.bin");
-        assert_eq!(catalog[0]["sizeBytes"], 147_951_465_u64);
+        assert_eq!(catalog[0]["id"], "tiny-q8_0");
+        assert_eq!(catalog[0]["name"], "Whisper Tiny multilingüe");
+        assert_eq!(catalog[0]["label"], "Rápido");
+        assert_eq!(catalog[0]["filename"], "ggml-tiny-q8_0.bin");
+        assert_eq!(catalog[0]["sizeBytes"], 43_537_433_u64);
         assert_eq!(
             catalog[0]["downloadUrl"],
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin"
         );
         assert_eq!(
             catalog[0]["sha256"],
-            "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+            "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca"
         );
 
-        assert_eq!(catalog[1]["id"], "small");
-        assert_eq!(catalog[1]["label"], "Predeterminado");
-        assert_eq!(catalog[1]["filename"], "ggml-small.bin");
-        assert_eq!(catalog[1]["sizeBytes"], 487_601_967_u64);
+        assert_eq!(catalog[1]["id"], "base");
+        assert_eq!(catalog[1]["name"], "Whisper base multilingüe");
+        assert_eq!(catalog[1]["label"], "Liviano");
+        assert_eq!(catalog[1]["filename"], "ggml-base.bin");
+        assert_eq!(catalog[1]["sizeBytes"], 147_951_465_u64);
         assert_eq!(
             catalog[1]["downloadUrl"],
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
         );
         assert_eq!(
             catalog[1]["sha256"],
-            "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+            "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
         );
 
-        assert_eq!(catalog[2]["id"], "large-v3-turbo-q5_0");
-        assert_eq!(catalog[2]["label"], "Calidad");
-        assert_eq!(catalog[2]["filename"], "ggml-large-v3-turbo-q5_0.bin");
-        assert_eq!(catalog[2]["sizeBytes"], 574_041_195_u64);
+        assert_eq!(catalog[2]["id"], "small-q8_0");
+        assert_eq!(catalog[2]["name"], "Whisper Small cuantizado");
+        assert_eq!(catalog[2]["label"], "Balanceado");
+        assert_eq!(catalog[2]["filename"], "ggml-small-q8_0.bin");
+        assert_eq!(catalog[2]["sizeBytes"], 264_464_607_u64);
         assert_eq!(
             catalog[2]["downloadUrl"],
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin"
         );
         assert_eq!(
             catalog[2]["sha256"],
+            "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f"
+        );
+
+        assert_eq!(catalog[3]["id"], "small");
+        assert_eq!(catalog[3]["name"], "Whisper small multilingüe");
+        assert_eq!(catalog[3]["label"], "Predeterminado");
+        assert_eq!(catalog[3]["filename"], "ggml-small.bin");
+        assert_eq!(catalog[3]["sizeBytes"], 487_601_967_u64);
+        assert_eq!(
+            catalog[3]["downloadUrl"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+        );
+        assert_eq!(
+            catalog[3]["sha256"],
+            "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+        );
+
+        assert_eq!(catalog[4]["id"], "large-v3-turbo-q5_0");
+        assert_eq!(catalog[4]["name"], "Whisper Large v3 Turbo");
+        assert_eq!(catalog[4]["label"], "Calidad");
+        assert_eq!(catalog[4]["filename"], "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(catalog[4]["sizeBytes"], 574_041_195_u64);
+        assert_eq!(
+            catalog[4]["downloadUrl"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+        );
+        assert_eq!(
+            catalog[4]["sha256"],
             "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        );
+
+        assert_eq!(catalog[5]["id"], "large-v3-turbo-q8_0");
+        assert_eq!(catalog[5]["name"], "Whisper Large v3 Turbo cuantizado");
+        assert_eq!(catalog[5]["label"], "Máximo");
+        assert_eq!(catalog[5]["filename"], "ggml-large-v3-turbo-q8_0.bin");
+        assert_eq!(catalog[5]["sizeBytes"], 874_188_075_u64);
+        assert_eq!(
+            catalog[5]["downloadUrl"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin"
+        );
+        assert_eq!(
+            catalog[5]["sha256"],
+            "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"
         );
     }
 

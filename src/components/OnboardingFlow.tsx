@@ -14,7 +14,7 @@ import {
   type ModelStatus,
 } from "../native/commands";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
-import { MODEL_PROFILES } from "./ModelSelector";
+import { DEFAULT_MODEL_ID, MODEL_PROFILES } from "./ModelSelector";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
 
@@ -51,7 +51,7 @@ export function OnboardingFlow({
   const [selectedModelId, setSelectedModelId] = useState(() => (
     MODEL_PROFILES.some((profile) => profile.id === initialSettings.modelId)
       ? initialSettings.modelId
-      : "small"
+      : DEFAULT_MODEL_ID
   ));
   const [modelStatuses, setModelStatuses] = useState<Record<string, ModelStatus>>({});
   const [modelErrors, setModelErrors] = useState<Record<string, string>>({});
@@ -82,7 +82,9 @@ export function OnboardingFlow({
   const bridgeRef = useRef(bridge);
   const bridgeGenerationRef = useRef(0);
 
-  const selectedProfile = MODEL_PROFILES.find((profile) => profile.id === selectedModelId) ?? MODEL_PROFILES[1];
+  const selectedProfile = MODEL_PROFILES.find((profile) => profile.id === selectedModelId)
+    ?? MODEL_PROFILES.find((profile) => profile.id === DEFAULT_MODEL_ID)
+    ?? MODEL_PROFILES[0];
   const selectedModel = modelStatuses[selectedModelId];
   const modelReady = Boolean(selectedModel?.installed && selectedModel.checksumValid);
   const downloadProgressText = downloadProgress

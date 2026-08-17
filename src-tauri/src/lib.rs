@@ -298,11 +298,7 @@ fn model_status(model_id: &str) -> Result<ModelStatus, String> {
         .ok_or_else(|| "Modelo no disponible".to_string())?;
     let mut status = ModelStatus {
         id: metadata.id.clone(),
-        name: if metadata.id == "base" {
-            "Whisper base multilingüe".into()
-        } else {
-            format!("Whisper {}", metadata.id)
-        },
+        name: metadata.name.clone(),
         label: metadata.label.clone(),
         installed: false,
         checksum_valid: false,
@@ -2125,7 +2121,14 @@ mod tests {
 
     #[test]
     fn cached_context_fast_path_accepts_each_catalog_model_id() {
-        for model_id in ["base", "small", "large-v3-turbo-q5_0"] {
+        for model_id in [
+            "tiny-q8_0",
+            "base",
+            "small-q8_0",
+            "small",
+            "large-v3-turbo-q5_0",
+            "large-v3-turbo-q8_0",
+        ] {
             let mut cache = CachedWhisperContext::default();
             cache.mark_ready_for_test(model_id);
 
@@ -2136,7 +2139,14 @@ mod tests {
 
     #[test]
     fn cached_context_hit_skips_model_resolution_for_all_supported_models() {
-        for model_id in ["base", "small", "large-v3-turbo-q5_0"] {
+        for model_id in [
+            "tiny-q8_0",
+            "base",
+            "small-q8_0",
+            "small",
+            "large-v3-turbo-q5_0",
+            "large-v3-turbo-q8_0",
+        ] {
             let mut cache = CachedWhisperContext::default();
             cache.mark_ready_for_test(model_id);
             let mut resolution_calls = 0;

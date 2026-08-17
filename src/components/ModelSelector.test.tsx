@@ -55,26 +55,32 @@ function makeBridge(overrides: Partial<ChamuBridge> = {}): ChamuBridge {
 }
 
 describe("ModelSelector", () => {
-  it("shows the three closed Whisper profiles with exact display sizes", async () => {
+  it("shows the six closed Whisper profiles with exact display sizes", async () => {
     render(<ModelSelector bridge={makeBridge()} selectedModelId="small" onModelActivated={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: /liviano/i })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible());
     expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeChecked();
+    expect(screen.getByText(/Rápido.*42 MiB/i)).toBeVisible();
     expect(screen.getByText(/Liviano.*142 MiB/i)).toBeVisible();
+    expect(screen.getByText(/Balanceado.*252 MiB/i)).toBeVisible();
     expect(screen.getAllByText(/Predeterminado.*466 MiB/i)[0]).toBeVisible();
     expect(screen.getByText(/Calidad.*547 MiB/i)).toBeVisible();
+    expect(screen.getByText(/Máximo.*834 MiB/i)).toBeVisible();
   });
 
-  it("keeps all three profiles visible when the catalog is incomplete", async () => {
+  it("keeps all six profiles visible when the catalog is incomplete", async () => {
     const bridge = makeBridge({
       getModelCatalog: vi.fn(async () => catalog.slice(0, 1)),
     });
 
     render(<ModelSelector bridge={bridge} selectedModelId="small" onModelActivated={vi.fn()} />);
 
-    expect(await screen.findByRole("radio", { name: /liviano/i })).toBeVisible();
+    expect(await screen.findByRole("radio", { name: /rápido/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /liviano/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /balanceado/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /predeterminado/i })).toBeVisible();
     expect(screen.getByRole("radio", { name: /calidad/i })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /máximo/i })).toBeVisible();
     expect(await screen.findByRole("alert")).toHaveTextContent(/catálogo.*incompleto/i);
   });
 
