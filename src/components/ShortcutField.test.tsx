@@ -69,6 +69,31 @@ describe("normalizeShortcutFromKeyboardEvent", () => {
       metaKey: true,
     }))).toEqual({ shortcut: "Alt+Meta+F1" });
   });
+
+  it("detects the Super key without metaKey as WebKitGTK reports it", () => {
+    expect(normalizeShortcutFromKeyboardEvent(keyboardEvent({
+      code: "OSLeft",
+      key: "Super",
+      ctrlKey: true,
+      metaKey: false,
+    }))).toMatchObject({ error: expect.stringMatching(/tecla principal/i) });
+
+    expect(normalizeShortcutFromKeyboardEvent(keyboardEvent({
+      code: "MetaRight",
+      key: "Meta",
+      altKey: true,
+      metaKey: false,
+    }))).toMatchObject({ error: expect.stringMatching(/tecla principal/i) });
+  });
+
+  it("keeps the Super modifier from a still-pressed key during normalization", () => {
+    expect(normalizeShortcutFromKeyboardEvent(keyboardEvent({
+      code: "KeyA",
+      key: "a",
+      ctrlKey: true,
+      metaKey: false,
+    }), new Set(["OSLeft"]))).toEqual({ shortcut: "CommandOrControl+Meta+A" });
+  });
 });
 
 describe("ShortcutField", () => {
@@ -168,6 +193,88 @@ describe("ShortcutField", () => {
     expect(screen.getByRole("button", { name: /pulsa el atajo/i })).toBeVisible();
     expect(onChange).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("previews the Super modifier when WebKitGTK reports it as OSLeft", () => {
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    render(<ShortcutField value={DEFAULT_SHORTCUT} onChange={onChange} onError={onError} />);
+
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    fireEvent.keyDown(captureButton, {
+      code: "OSLeft",
+      key: "Super",
+      ctrlKey: true,
+      metaKey: false,
+    });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(screen.getByText(/ctrl.*meta.*…/i)).toBeVisible();
+  });
+
+  it("captures Ctrl+Super+Space when Super arrives as OSLeft without metaKey", () => {
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    render(<ShortcutField value={DEFAULT_SHORTCUT} onChange={onChange} onError={onError} />);
+
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    fireEvent.keyDown(captureButton, {
+      code: "ControlLeft",
+      key: "Control",
+      ctrlKey: true,
+    });
+    fireEvent.keyDown(captureButton, {
+      code: "OSLeft",
+      key: "Super",
+      ctrlKey: true,
+      metaKey: false,
+    });
+    fireEvent.keyDown(captureButton, {
+      code: "Space",
+      key: " ",
+      ctrlKey: true,
+      metaKey: false,
+    });
+
+    expect(onChange).toHaveBeenCalledWith("CommandOrControl+Meta+Space");
+    expect(onError).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("drops the Super modifier when it is released before the main key", () => {
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    render(<ShortcutField value={DEFAULT_SHORTCUT} onChange={onChange} onError={onError} />);
+
+    const captureButton = screen.getByRole("button", { name: /capturar atajo/i });
+    fireEvent.click(captureButton);
+    fireEvent.keyDown(captureButton, {
+      code: "ControlLeft",
+      key: "Control",
+      ctrlKey: true,
+    });
+    fireEvent.keyDown(captureButton, {
+      code: "OSLeft",
+      key: "Super",
+      ctrlKey: true,
+      metaKey: false,
+    });
+    fireEvent.keyUp(captureButton, {
+      code: "OSLeft",
+      key: "Super",
+      ctrlKey: true,
+      metaKey: false,
+    });
+    fireEvent.keyDown(captureButton, {
+      code: "Space",
+      key: " ",
+      ctrlKey: true,
+      metaKey: false,
+    });
+
+    expect(onChange).toHaveBeenCalledWith("CommandOrControl+Space");
   });
 
   it("cancels capture with Escape and ignores a later main key", () => {

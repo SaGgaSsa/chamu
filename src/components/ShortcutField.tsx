@@ -110,6 +110,29 @@ function isModifierKey(code: string, key: string): boolean {
   return MODIFIER_CODES.has(code) || MODIFIER_KEYS.has(key);
 }
 
+const META_CODES = new Set(["MetaLeft", "MetaRight", "OSLeft", "OSRight"]);
+
+/**
+ * WebKitGTK reports the Super/Windows key as `key: "Super"` with
+ * `code: "OSLeft"` and without setting `metaKey`. Detect it from the code or
+ * key name too so the modifier is not lost during capture.
+ */
+function isMetaModifier(event: KeyboardEvent): boolean {
+  const code = event.code ?? "";
+  const key = event.key ?? "";
+  return (
+    event.metaKey
+    || META_CODES.has(code)
+    || key === "Meta"
+    || key === "OS"
+    || key === "Super"
+  );
+}
+
+function isMetaCodePressed(codes: ReadonlySet<string>): boolean {
+  return [...META_CODES].some((code) => codes.has(code));
+}
+
 function normalizeMainKey(event: KeyboardEvent): string {
   const code = event.code?.trim() ?? "";
   const rawKey = event.key ?? "";
@@ -131,12 +154,17 @@ function normalizeMainKey(event: KeyboardEvent): string {
  * Converts a browser key event to the format accepted by the global shortcut
  * plugin. The event must contain one main key and one or two modifiers.
  */
-export function normalizeShortcutFromKeyboardEvent(event: KeyboardEvent): ShortcutResult {
+export function normalizeShortcutFromKeyboardEvent(
+  event: KeyboardEvent,
+  pressedModifierCodes: ReadonlySet<string> = new Set(),
+): ShortcutResult {
   const modifiers: string[] = [];
   if (event.ctrlKey) modifiers.push("CommandOrControl");
   if (event.altKey) modifiers.push("Alt");
   if (event.shiftKey) modifiers.push("Shift");
-  if (event.metaKey) modifiers.push("Meta");
+  if (isMetaModifier(event) || isMetaCodePressed(pressedModifierCodes)) {
+    modifiers.push("Meta");
+  }
 
   const mainKey = normalizeMainKey(event);
   const keyCount = modifiers.length + (mainKey ? 1 : 0);
@@ -189,6 +217,7 @@ export function ShortcutField({
   const [error, setError] = useState<string>();
   const [capturePreview, setCapturePreview] = useState<string | null>(null);
   const captureButtonRef = useRef<HTMLButtonElement>(null);
+  const pressedModifierCodesRef = useRef(new Set<string>());
 
   function reportError(message?: string) {
     setError(message);
@@ -205,6 +234,7 @@ export function ShortcutField({
     clearError();
     setCapturePreview(null);
     setCapturing(true);
+    pressedModifierCodesRef.current.clear();
     onCapturingChange?.(true);
     captureButtonRef.current?.focus();
   }
@@ -212,6 +242,7 @@ export function ShortcutField({
   function cancelCapture() {
     setCapturing(false);
     setCapturePreview(null);
+    pressedModifierCodesRef.current.clear();
     clearError();
     onCapturingChange?.(false);
   }
@@ -221,7 +252,7 @@ export function ShortcutField({
     if (event.ctrlKey) modifiers.push("Ctrl");
     if (event.altKey) modifiers.push("Alt");
     if (event.shiftKey) modifiers.push("Shift");
-    if (event.metaKey) modifiers.push("Meta");
+    if (isMetaModifier(event.nativeEvent)) modifiers.push("Meta");
     return `${modifiers.join(" + ")} + …`;
   }
 
@@ -236,16 +267,26 @@ export function ShortcutField({
       return;
     }
 
+    const code = event.code ?? "";
+    if (code && isModifierKey(code, event.key)) {
+      pressedModifierCodesRef.current.add(code);
+    }
+
     const mainKey = normalizeMainKey(event.nativeEvent);
-    const hasModifiers = event.ctrlKey || event.altKey || event.shiftKey || event.metaKey;
+    const hasModifiers =
+      event.ctrlKey || event.altKey || event.shiftKey || isMetaModifier(event.nativeEvent);
     if (!mainKey && hasModifiers) {
       setCapturePreview(modifierPreview(event));
       clearError();
       return;
     }
 
-    const result = normalizeShortcutFromKeyboardEvent(event.nativeEvent);
+    const result = normalizeShortcutFromKeyboardEvent(
+      event.nativeEvent,
+      pressedModifierCodesRef.current,
+    );
     if (result.shortcut) {
+      pressedModifierCodesRef.current.clear();
       onChange(result.shortcut);
       setCapturing(false);
       setCapturePreview(null);
@@ -263,7 +304,13 @@ export function ShortcutField({
     event.preventDefault();
     event.stopPropagation();
 
-    const hasModifiers = event.ctrlKey || event.altKey || event.shiftKey || event.metaKey;
+    const code = event.code ?? "";
+    if (code && isModifierKey(code, event.key)) {
+      pressedModifierCodesRef.current.delete(code);
+    }
+
+    const hasModifiers =
+      event.ctrlKey || event.altKey || event.shiftKey || isMetaModifier(event.nativeEvent);
     setCapturePreview(hasModifiers ? modifierPreview(event) : null);
     clearError();
   }
