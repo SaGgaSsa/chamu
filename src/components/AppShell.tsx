@@ -13,6 +13,7 @@ import { PrivacyBadge } from "./PrivacyBadge";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
+import { MicrophoneSelector } from "./MicrophoneSelector";
 import { ModelSelector } from "./ModelSelector";
 
 interface AppShellProps {
@@ -162,6 +163,14 @@ export function AppShell({
     };
   }, [activeBridge]);
 
+  function refreshMicrophoneName() {
+    const loadMicrophoneInfo = activeBridge.getMicrophoneInfo;
+    if (!loadMicrophoneInfo) return;
+    void loadMicrophoneInfo().then((info) => setMicrophoneName(info.name)).catch(() => {
+      // The tester renders the safe system fallback when the native probe is unavailable.
+    });
+  }
+
   function openSettings() {
     setDraftSettings(currentSettings);
     setSettingsError(null);
@@ -175,6 +184,7 @@ export function AppShell({
       await activeBridge.saveSettings(draftSettings);
       setCurrentSettings(draftSettings);
       setSettingsOpen(false);
+      refreshMicrophoneName();
     } catch (error: unknown) {
       setSettingsError(error instanceof Error ? error.message : "No se pudo guardar la configuración");
     } finally {
@@ -628,6 +638,16 @@ export function AppShell({
             }
             onModelActivated={handleModelActivated}
             selectedModelId={currentSettings.modelId}
+          />
+          <MicrophoneSelector
+            bridge={activeBridge}
+            disabled={
+              dictationActionPending
+              || dictationStarting
+              || isBusyRecordingState(currentRecordingState)
+            }
+            onChange={(inputDevice) => setDraftSettings((current) => ({ ...current, inputDevice }))}
+            value={draftSettings.inputDevice}
           />
           {settingsError && <p className="error-message">{settingsError}</p>}
           <div className="settings-panel__actions">

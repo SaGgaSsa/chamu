@@ -50,10 +50,24 @@ pub struct AppSettings {
     pub shortcut: String,
     #[serde(default = "legacy_model_id")]
     pub model_id: String,
+    #[serde(default)]
+    pub input_device: String,
 }
 
 fn legacy_model_id() -> String {
     "base".into()
+}
+
+/// Clears persisted device selections on Linux because the ALSA names exposed
+/// by cpal are direct PCM views, not stable PipeWire capture endpoints.
+pub fn normalize_settings_for_platform(settings: &mut AppSettings) -> bool {
+    #[cfg(target_os = "linux")]
+    if !settings.input_device.trim().is_empty() {
+        settings.input_device.clear();
+        return true;
+    }
+
+    false
 }
 
 impl Default for AppSettings {
@@ -63,6 +77,7 @@ impl Default for AppSettings {
             mode: "hold".into(),
             shortcut: "CommandOrControl+Shift+Space".into(),
             model_id: "small".into(),
+            input_device: String::new(),
         }
     }
 }
@@ -86,25 +101,42 @@ pub fn validate_settings(settings: &AppSettings) -> Result<(), String> {
     {
         return Err("Modelo no disponible".into());
     }
+    if settings.input_device.len() > 200 {
+        return Err("El nombre del micrófono es demasiado largo".into());
+    }
     Ok(())
 }
 
 pub fn load_settings_file(path: &Path) -> Result<AppSettings, String> {
     let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let settings: AppSettings = serde_json::from_str(&contents)
+    let mut document: serde_json::Value = serde_json::from_str(&contents)
         .map_err(|error| format!("No se pudo leer la configuración: {error}"))?;
+    let mut settings: AppSettings = serde_json::from_value(document.clone())
+        .map_err(|error| format!("No se pudo leer la configuración: {error}"))?;
+    let migrated = normalize_settings_for_platform(&mut settings);
     validate_settings(&settings)?;
+    if migrated {
+        document["inputDevice"] = serde_json::Value::String(String::new());
+        write_json_file_atomic(path, &document)?;
+    }
     Ok(settings)
 }
 
 pub fn save_settings_file(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    validate_settings(settings)?;
+    let mut normalized = settings.clone();
+    normalize_settings_for_platform(&mut normalized);
+    validate_settings(&normalized)?;
+    let document = serde_json::to_value(&normalized)
+        .map_err(|error| format!("No se pudo serializar la configuración: {error}"))?;
+    write_json_file_atomic(path, &document)
+}
+
+fn write_json_file_atomic(path: &Path, document: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-
     let temporary = path.with_extension("json.tmp");
-    let serialized = serde_json::to_vec_pretty(settings)
+    let serialized = serde_json::to_vec_pretty(document)
         .map_err(|error| format!("No se pudo serializar la configuración: {error}"))?;
     let mut file = OpenOptions::new()
         .create(true)
@@ -1300,15 +1332,83 @@ mod tests {
             mode: "toggle".into(),
             shortcut: "Ctrl+Space".into(),
             model_id: "small".into(),
+            input_device: "Micrófono USB".into(),
         };
 
         save_settings_file(&path, &expected).expect("save settings");
-        assert_eq!(load_settings_file(&path).expect("load settings"), expected);
+        let loaded = load_settings_file(&path).expect("load settings");
+        #[cfg(target_os = "linux")]
+        assert_eq!(loaded.input_device, "");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(loaded.input_device, "Micrófono USB");
+        assert_eq!(loaded.language, expected.language);
+        assert_eq!(loaded.mode, expected.mode);
+        assert_eq!(loaded.shortcut, expected.shortcut);
+        assert_eq!(loaded.model_id, expected.model_id);
         assert!(validate_settings(&AppSettings {
             language: "fr".into(),
+            ..expected.clone()
+        })
+        .is_err());
+        assert!(validate_settings(&AppSettings {
+            input_device: "x".repeat(201),
             ..expected
         })
         .is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_save_settings_persists_the_system_default_input_device() {
+        let root = test_root("linux-save-input-device");
+        let path = root.join("settings.json");
+        let settings = AppSettings {
+            input_device: "front:CARD=Mic,DEV=0".into(),
+            ..AppSettings::default()
+        };
+
+        save_settings_file(&path, &settings).expect("save settings");
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+        assert_eq!(persisted["inputDevice"], "");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_migrates_saved_alsa_input_device_to_the_system_default() {
+        let root = test_root("linux-input-device-migration");
+        let path = root.join("settings.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "language": "en",
+                "mode": "toggle",
+                "shortcut": "Ctrl+Space",
+                "modelId": "small",
+                "inputDevice": "front:CARD=Mic,DEV=0",
+                "futureSetting": {"enabled": true}
+            })
+            .to_string(),
+        )
+        .expect("write legacy settings");
+
+        let loaded = load_settings_file(&path).expect("load legacy settings");
+        assert_eq!(loaded.language, "en");
+        assert_eq!(loaded.mode, "toggle");
+        assert_eq!(loaded.shortcut, "Ctrl+Space");
+        assert_eq!(loaded.model_id, "small");
+        assert_eq!(loaded.input_device, "");
+
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read migrated settings"))
+                .expect("parse migrated settings");
+        assert_eq!(persisted["language"], "en");
+        assert_eq!(persisted["mode"], "toggle");
+        assert_eq!(persisted["shortcut"], "Ctrl+Space");
+        assert_eq!(persisted["modelId"], "small");
+        assert_eq!(persisted["inputDevice"], "");
+        assert_eq!(persisted["futureSetting"], serde_json::json!({"enabled": true}));
     }
 
     #[test]
@@ -1414,12 +1514,14 @@ mod tests {
         let settings = load_settings_file(&path).expect("load old settings");
         let json = serde_json::to_value(settings).expect("serialize migrated settings");
         assert_eq!(json["modelId"], "base");
+        assert_eq!(json["inputDevice"], "");
     }
 
     #[test]
     fn new_settings_default_to_small_model() {
         let json = serde_json::to_value(AppSettings::default()).expect("serialize defaults");
         assert_eq!(json["modelId"], "small");
+        assert_eq!(json["inputDevice"], "");
     }
 
     #[test]

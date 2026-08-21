@@ -242,6 +242,26 @@ describe("AppShell", () => {
     expect(within(dialog).getByText(/selector bloqueado/i)).toBeVisible();
   });
 
+  it("lets the user pick an input device inside settings", async () => {
+    const bridge = makeBridge({
+      listInputDevices: vi.fn(async () => [
+        { id: "front:CARD=Generic_1,DEV=0", label: "HD-Audio Generic", isBuiltIn: true },
+        { id: "front:CARD=S,DEV=0", label: "HyperX QuadCast S", isBuiltIn: false },
+      ]),
+    });
+    render(<AppShell bridge={bridge} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /abrir configuración/i }));
+    const dialog = screen.getByRole("dialog", { name: /configuración/i });
+    const select = await waitFor(() => within(dialog).getByRole("combobox", { name: /dispositivo de captura/i }));
+    expect(select).toHaveValue("");
+    expect(within(dialog).getByText(/micrófono actual:/i).parentElement).toHaveTextContent("Micrófono predeterminado del sistema");
+    fireEvent.change(select, { target: { value: "front:CARD=S,DEV=0" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /guardar configuración/i }));
+
+    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ inputDevice: "front:CARD=S,DEV=0" })));
+  });
+
   it("keeps the previous model selected when activation fails", async () => {
     const bridge = makeBridge({
       activateModel: vi.fn(async () => {

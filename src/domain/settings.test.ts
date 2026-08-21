@@ -11,6 +11,7 @@ describe("app settings", () => {
       mode: "hold",
       shortcut: "CommandOrControl+Shift+Space",
       modelId: "small",
+      inputDevice: "",
     });
   });
 
@@ -18,6 +19,7 @@ describe("app settings", () => {
     const settings = mergeSettings(DEFAULT_SETTINGS, {
       language: "en",
       mode: "toggle",
+      inputDevice: "Micrófono USB",
     });
 
     expect(settings).toEqual<AppSettings>({
@@ -25,6 +27,7 @@ describe("app settings", () => {
       mode: "toggle",
       shortcut: "CommandOrControl+Shift+Space",
       modelId: "small",
+      inputDevice: "Micrófono USB",
     });
   });
 

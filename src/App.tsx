@@ -14,6 +14,7 @@ export interface AppProps {
 export default function App({ bridge = nativeBridge, forceOnboarding = false }: AppProps) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsReady, setSettingsReady] = useState(false);
+  const [modelLoading, setModelLoading] = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(() => {
     if (forceOnboarding || typeof window === "undefined") return false;
     return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true";
@@ -37,6 +38,26 @@ export default function App({ bridge = nativeBridge, forceOnboarding = false }: 
     };
   }, [bridge]);
 
+  useEffect(() => {
+    const preload = bridge.preloadModel;
+    if (!preload) {
+      setModelLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void preload()
+      .catch(() => {
+        // A missing model during onboarding is expected; the selector
+        // handles installation and the first dictation falls back to it.
+      })
+      .finally(() => {
+        if (!cancelled) setModelLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge]);
+
   function completeOnboarding(nextSettings: AppSettings) {
     setSettings(nextSettings);
     setOnboardingComplete(true);
@@ -52,8 +73,8 @@ export default function App({ bridge = nativeBridge, forceOnboarding = false }: 
     setOnboardingComplete(false);
   }
 
-  if (!settingsReady) {
-    return <p role="status">Cargando configuración…</p>;
+  if (!settingsReady || modelLoading) {
+    return <p role="status">Cargando modelo de voz…</p>;
   }
 
   if (!onboardingComplete) {

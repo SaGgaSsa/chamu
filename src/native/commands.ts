@@ -62,6 +62,15 @@ export interface MicrophoneInfo {
   name: string;
 }
 
+/** A microphone the user can pick.  The id is the stable device identifier
+ * (the ALSA device name on Linux); the label is the friendly name shown in
+ * the UI. */
+export interface InputDevice {
+  id: string;
+  label: string;
+  isBuiltIn: boolean;
+}
+
 export type PlatformSession = "windows" | "x11" | "wayland" | "unknown";
 
 export interface PlatformDiagnosis {
@@ -146,6 +155,12 @@ export interface ChamuBridge {
   cancelModelDownload: (modelId: string) => Promise<void>;
   testMicrophone: () => Promise<MicrophoneCheck>;
   getMicrophoneInfo?: () => Promise<MicrophoneInfo>;
+  /** Optional to keep browser/test bridges source-compatible. */
+  listInputDevices?: () => Promise<InputDevice[]>;
+  /** Optional to keep browser/test bridges source-compatible; the native
+   * bridge preloads the active model at startup so the first dictation never
+   * waits for the model. */
+  preloadModel?: () => Promise<string>;
   testShortcut: (shortcut: string) => Promise<ShortcutCheck>;
   testClipboard: () => Promise<ClipboardCheck>;
   testPaste: () => Promise<ClipboardCheck>;
@@ -258,6 +273,14 @@ export function getMicrophoneInfo(): Promise<MicrophoneInfo> {
   return invoke<MicrophoneInfo>("get_microphone_info");
 }
 
+export function listInputDevices(): Promise<InputDevice[]> {
+  return invoke<InputDevice[]>("list_input_devices");
+}
+
+export function preloadModel(): Promise<string> {
+  return invoke<string>("preload_model");
+}
+
 export function testShortcut(shortcut: string): Promise<ShortcutCheck> {
   return invoke<ShortcutCheck>("test_shortcut", { shortcut });
 }
@@ -319,6 +342,8 @@ export const nativeBridge: ChamuBridge = {
   cancelModelDownload,
   testMicrophone,
   getMicrophoneInfo,
+  listInputDevices,
+  preloadModel,
   testShortcut,
   diagnosePlatform,
   configureWaylandHoldShortcut,

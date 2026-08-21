@@ -14,6 +14,7 @@ import {
   type ModelStatus,
 } from "../native/commands";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
+import { MicrophoneSelector } from "./MicrophoneSelector";
 import { DEFAULT_MODEL_ID, MODEL_PROFILES } from "./ModelSelector";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
@@ -598,6 +599,11 @@ export function OnboardingFlow({
                 resultId={dictationResult?.id}
                 resultPasted={dictationResult?.pasted}
                 onCapturingChange={setShortcutCaptureActive}
+              />
+              <MicrophoneSelector
+                bridge={bridge}
+                onChange={(inputDevice) => setSettings((current) => ({ ...current, inputDevice }))}
+                value={settings.inputDevice}
               />
               {saveError && <p className="error-message">{saveError}</p>}
             </>

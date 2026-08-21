@@ -327,6 +327,28 @@ describe("OnboardingFlow", () => {
     expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "toggle" }));
   });
 
+  it("saves the selected input device when finishing", async () => {
+    const bridge = makeBridge({
+      listInputDevices: vi.fn(async () => [
+        { id: "front:CARD=Generic_1,DEV=0", label: "HD-Audio Generic", isBuiltIn: true },
+        { id: "front:CARD=S,DEV=0", label: "HyperX QuadCast S", isBuiltIn: false },
+      ]),
+    });
+    const onComplete = vi.fn();
+    render(<OnboardingFlow bridge={bridge} onComplete={onComplete} />);
+
+    await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
+    continueStep();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /prueba el dictado/i })).toBeVisible());
+
+    const select = await waitFor(() => screen.getByRole("combobox", { name: /dispositivo de captura/i }));
+    fireEvent.change(select, { target: { value: "front:CARD=S,DEV=0" } });
+    continueStep();
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ inputDevice: "front:CARD=S,DEV=0" })));
+    expect(bridge.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ inputDevice: "front:CARD=S,DEV=0" }));
+  });
+
   it("does not continue or change modelId when activation fails", async () => {
     const initialSettings = { ...DEFAULT_SETTINGS, modelId: "small" };
     const bridge = makeBridge({

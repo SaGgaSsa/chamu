@@ -6,6 +6,8 @@ export interface AppSettings {
   mode: RecordingMode;
   shortcut: string;
   modelId: string;
+  /** Empty string selects the system default input device. */
+  inputDevice: string;
 }
 
 export const DEFAULT_SETTINGS: Readonly<AppSettings> = {
@@ -13,6 +15,7 @@ export const DEFAULT_SETTINGS: Readonly<AppSettings> = {
   mode: "hold",
   shortcut: "CommandOrControl+Shift+Space",
   modelId: "small",
+  inputDevice: "",
 };
 
 export function mergeSettings(

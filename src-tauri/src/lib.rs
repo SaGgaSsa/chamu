@@ -29,7 +29,8 @@ use audio_capture::CaptureSessionHandle;
 use core::{
     app_storage_paths, append_diagnostic, command_available, diagnose_platform as detect_platform,
     discover_models_in_dirs, finalize_model_download, is_model_path_allowed, load_diagnostics,
-    load_settings_file, model_catalog, now_unix_millis, save_settings_file,
+    load_settings_file, model_catalog, normalize_settings_for_platform, now_unix_millis,
+    save_settings_file,
     validate_model_checksum, validate_settings, AppSettings, DiagnosticRecord, DownloadController,
     HistoryEntry, HistoryStore, LocalModel, ModelValidation, PlatformDiagnosis, PlatformSession,
     RecordingLifecycle, RecordingPhase,
@@ -821,11 +822,12 @@ fn get_settings(state: State<'_, RuntimeState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn set_settings(settings: AppSettings, state: State<'_, RuntimeState>) -> Result<(), String> {
+fn set_settings(mut settings: AppSettings, state: State<'_, RuntimeState>) -> Result<(), String> {
     let _model_operation = state
         .model_activation
         .try_lock()
         .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
+    normalize_settings_for_save(&mut settings);
     validate_settings(&settings)?;
     let active_model_id = state
         .settings
@@ -864,12 +866,34 @@ fn set_recording_active(active: bool, state: State<'_, RuntimeState>) -> Result<
     Ok(())
 }
 
+fn configured_capture_device(input_device: String) -> Option<String> {
+    audio_capture::capture_device_name((!input_device.trim().is_empty()).then_some(input_device))
+}
+
+fn normalize_settings_for_save(settings: &mut AppSettings) {
+    normalize_settings_for_platform(settings);
+}
+
+fn microphone_info_name(input_device: &str) -> String {
+    audio_capture::effective_microphone_name(
+        (!input_device.trim().is_empty()).then_some(input_device),
+    )
+}
+
 #[tauri::command]
 fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
     let _model_operation = state
         .model_activation
         .try_lock()
         .map_err(|_| MODEL_OPERATION_BUSY_MESSAGE.to_string())?;
+    let input_device = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración".to_string())?
+        .input_device
+        .clone();
+    println!("[chamu] start_dictation: inputDevice={input_device:?}");
+    let device_name = configured_capture_device(input_device);
     let mut capture = state
         .capture
         .lock()
@@ -877,7 +901,7 @@ fn start_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, St
     if capture.is_some() {
         return Err("Ya hay un dictado en curso".into());
     }
-    *capture = Some(CaptureSessionHandle::start()?);
+    *capture = Some(CaptureSessionHandle::start(device_name)?);
     if let Err(error) = state
         .recording
         .lock()
@@ -942,6 +966,7 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
         let whisper_context = Arc::clone(&state.whisper_context);
         let text = tauri::async_runtime::spawn_blocking(move || {
             let samples = capture.stop()?;
+            println!("[chamu] capture result: {} samples", samples.len());
             if samples.is_empty() {
                 return Err("No se capturó audio; revisa el permiso del micrófono".into());
             }
@@ -1642,10 +1667,44 @@ fn test_microphone() -> MicrophoneCheck {
 }
 
 #[tauri::command]
-fn get_microphone_info() -> MicrophoneInfo {
-    MicrophoneInfo {
-        name: audio_capture::default_input_device_name(),
-    }
+fn list_input_devices() -> Result<Vec<audio_capture::InputDevice>, String> {
+    let devices = audio_capture::list_input_devices()?;
+    println!("[chamu] list_input_devices: {devices:?}");
+    Ok(devices)
+}
+
+/// Loads the active model into the shared whisper context ahead of the first
+/// dictation.  The UI blocks on this so the first dictation never waits for
+/// the model.  A missing model during onboarding is a normal no-op.
+#[tauri::command]
+async fn preload_model(state: State<'_, RuntimeState>) -> Result<String, String> {
+    let model_id = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración".to_string())?
+        .model_id
+        .clone();
+    let whisper_context = Arc::clone(&state.whisper_context);
+    let model_id_for_task = model_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        warm_whisper_context(&whisper_context, &model_id_for_task)?;
+        Ok(model_id)
+    })
+    .await
+    .map_err(|error| format!("No se pudo cargar el modelo: {error}"))?
+}
+
+#[tauri::command]
+fn get_microphone_info(state: State<'_, RuntimeState>) -> Result<MicrophoneInfo, String> {
+    let input_device = state
+        .settings
+        .lock()
+        .map_err(|_| "No se pudo leer la configuración".to_string())?
+        .input_device
+        .clone();
+    Ok(MicrophoneInfo {
+        name: microphone_info_name(&input_device),
+    })
 }
 
 #[tauri::command]
@@ -1806,7 +1865,9 @@ pub fn run() {
             cancel_model_download,
             diagnose_platform,
             test_microphone,
+            list_input_devices,
             get_microphone_info,
+            preload_model,
             test_shortcut,
             test_clipboard,
             test_paste,
@@ -1881,6 +1942,36 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_capture_device_uses_the_platform_capture_policy() {
+        let saved_device = "front:CARD=Mic,DEV=0".to_string();
+        let requested = configured_capture_device(saved_device);
+        #[cfg(target_os = "linux")]
+        assert_eq!(requested, None);
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(requested, Some("front:CARD=Mic,DEV=0".to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn microphone_info_uses_the_effective_system_default_on_linux() {
+        let name = microphone_info_name("front:CARD=Mic,DEV=0");
+        assert_eq!(name, audio_capture::default_input_device_name());
+    }
+
+    #[test]
+    fn settings_for_save_normalize_the_input_device_for_the_platform() {
+        let mut settings = AppSettings {
+            input_device: "front:CARD=Mic,DEV=0".into(),
+            ..AppSettings::default()
+        };
+        normalize_settings_for_save(&mut settings);
+        #[cfg(target_os = "linux")]
+        assert_eq!(settings.input_device, "");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(settings.input_device, "front:CARD=Mic,DEV=0");
+    }
 
     #[test]
     fn model_download_progress_serializes_wire_contract() {
