@@ -23,6 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: Windows x64 NSIS
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            artifact_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*
           - name: Linux x86_64 AppImage and deb
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -128,6 +133,8 @@ jobs:
           const sourceRoot = "release-artifacts";
           const outputRoot = "release-assets";
           const patterns = [
+            /^Chamu_.*\.exe$/,
+            /^Chamu_.*\.exe\.sig$/,
             /^Chamu_.*\.AppImage$/,
             /^Chamu_.*\.AppImage\.sig$/,
             /^Chamu_.*\.deb$/,
@@ -152,8 +159,8 @@ jobs:
 
           walk(sourceRoot);
 
-          if (selected.size !== 4) {
-            throw new Error(`Expected exactly 4 release assets, found ${selected.size}`);
+          if (selected.size !== 6) {
+            throw new Error(`Expected exactly 6 release assets, found ${selected.size}`);
           }
 
           fs.rmSync(outputRoot, { recursive: true, force: true });
