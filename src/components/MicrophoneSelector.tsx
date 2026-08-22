@@ -62,14 +62,10 @@ export function MicrophoneSelector({
 
   const selectedDevice = devices.find((device) => device.id === value);
   const selectedValue = selectedDevice ? value : "";
-  const currentName = selectedDevice?.label ?? SYSTEM_DEFAULT_LABEL;
 
   return (
     <fieldset className="microphone-selector" disabled={disabled}>
       <legend>{heading}</legend>
-      <p className="microphone-selector__current">
-        <strong>Micrófono actual:</strong> {currentName}
-      </p>
       {loading && (
         <p className="microphone-selector__note" role="status">
           Buscando micrófonos…
@@ -78,11 +74,6 @@ export function MicrophoneSelector({
       {!loading && error && (
         <p className="error-message" role="alert">
           {error}
-        </p>
-      )}
-      {!loading && !error && devices.length <= 1 && (
-        <p className="microphone-selector__note">
-          El predeterminado del sistema está disponible como opción de captura.
         </p>
       )}
       <div className="microphone-selector__row">

@@ -109,9 +109,7 @@ describe("AppShell", () => {
     render(<AppShell bridge={makeQuietBridge()} />);
 
     expect(screen.getByRole("heading", { name: "Chamu" })).toBeVisible();
-    expect(screen.getByText("Tu voz, en tus manos")).toBeVisible();
     expect(screen.getAllByRole("status")[0]).toHaveTextContent("Listo");
-    expect(screen.getByText("Todo ocurre en este dispositivo")).toBeVisible();
   });
 
   it("renders a status-aware microphone icon with the existing accessible name", () => {
@@ -255,7 +253,6 @@ describe("AppShell", () => {
     const dialog = screen.getByRole("dialog", { name: /configuración/i });
     const select = await waitFor(() => within(dialog).getByRole("combobox", { name: /dispositivo de captura/i }));
     expect(select).toHaveValue("");
-    expect(within(dialog).getByText(/micrófono actual:/i).parentElement).toHaveTextContent("Micrófono predeterminado del sistema");
     fireEvent.change(select, { target: { value: "front:CARD=S,DEV=0" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /guardar configuración/i }));
 

@@ -117,10 +117,6 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
   return (
     <section className="dictation-tester" aria-label="Probador de dictado">
       <div className="dictation-tester__header">
-        <div>
-          <p className="eyebrow">PRUEBA LOCAL</p>
-          <h2>Prueba el dictado</h2>
-        </div>
         <div onMouseDown={captureDictationInput}>
           <DictationControl
             disabled={pending || starting || state.status === "transcribing"}
@@ -156,7 +152,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
       )}
 
       <fieldset className="choice-list">
-        <legend>Modo de grabación</legend>
+        <legend className="sr-only">Modo de grabación</legend>
         <label className="choice-card">
           <input
             checked={settings.mode === "hold"}
@@ -165,7 +161,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
             type="radio"
             value="hold"
           />
-          <span><strong>Mantener pulsado</strong><small>Graba mientras mantienes el atajo</small></span>
+          <span><strong>Mantener pulsado</strong></span>
         </label>
         <label className="choice-card">
           <input
@@ -175,7 +171,7 @@ export const DictationTester = forwardRef<DictationTesterHandle, DictationTester
             type="radio"
             value="toggle"
           />
-          <span><strong>Pulsar para alternar</strong><small>Una pulsación empieza y otra termina</small></span>
+          <span><strong>Pulsar para alternar</strong></span>
         </label>
       </fieldset>
 

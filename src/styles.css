@@ -296,25 +296,6 @@ h2 {
   padding: var(--space-8) var(--space-4) calc(var(--space-10) + env(safe-area-inset-bottom));
 }
 
-.privacy-badge {
-  display: inline-flex;
-  min-height: var(--touch-target);
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-  color: var(--color-success);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.03em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.privacy-badge span {
-  color: var(--color-recording);
-  font-size: 10px;
-}
-
 .welcome-card,
 .history-panel,
 .settings-panel {
@@ -480,28 +461,6 @@ h2 {
   text-align: left;
 }
 
-.model-selector__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.model-selector__header h2 {
-  font-size: 20px;
-}
-
-.model-selector__active {
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--color-success) 44%, transparent);
-  border-radius: var(--radius-full);
-  color: var(--color-success);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.3;
-  white-space: nowrap;
-}
-
 .model-selector__choices {
   margin-top: var(--space-2);
 }
@@ -565,15 +524,14 @@ h2 {
   cursor: not-allowed;
 }
 
-.microphone-selector__current {
-  margin: 0;
-  color: var(--color-on-surface);
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.microphone-selector__current strong {
-  font-weight: 600;
+.microphone-selector legend {
+  margin-bottom: var(--space-1);
+  color: var(--color-on-surface-variant);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .microphone-selector__label {
@@ -704,19 +662,8 @@ h2 {
   min-height: 0;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--space-4);
-}
-
-.dictation-tester__header > div:first-child {
-  min-width: 0;
-}
-
-.dictation-tester__header h2 {
-  overflow: hidden;
-  font-size: 22px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .dictation-tester__header .dictation-control {
@@ -1417,11 +1364,15 @@ kbd {
   top: 50%;
   left: 50%;
   width: calc(100% - 32px);
-  max-width: 520px;
+  max-width: 720px;
   max-height: calc(100vh - 48px);
   overflow: auto;
   padding: var(--space-6);
   transform: translate(-50%, -50%);
+}
+
+.settings-panel .choice-list {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
 }
 
 .settings-panel__header {
@@ -1433,10 +1384,6 @@ kbd {
 
 .settings-panel__header h2 {
   font-size: 24px;
-}
-
-.settings-panel__header .eyebrow {
-  margin-bottom: var(--space-2);
 }
 
 .icon-button {
@@ -1553,12 +1500,6 @@ kbd {
   padding: var(--space-4) var(--space-6) var(--space-4);
 }
 
-.app-shell:not(.onboarding-shell) .app-content > .privacy-badge {
-  align-self: center;
-  min-height: 28px;
-  margin-bottom: var(--space-2);
-}
-
 .app-shell:not(.onboarding-shell) .app-content > .welcome-card {
   display: none;
 }
@@ -1594,12 +1535,6 @@ kbd {
 
   .app-shell:not(.onboarding-shell) .app-content {
     padding-block: var(--space-2);
-  }
-
-  .app-shell:not(.onboarding-shell) .app-content > .privacy-badge {
-    min-height: 24px;
-    margin-bottom: var(--space-1);
-    font-size: 11px;
   }
 
   .dictation-tester {
@@ -1714,13 +1649,6 @@ kbd {
     padding-block: var(--space-6) calc(var(--space-10) + env(safe-area-inset-bottom));
   }
 
-  .app-shell:not(.onboarding-shell) .app-content > .privacy-badge {
-    align-self: center;
-    min-height: var(--touch-target);
-    margin-bottom: var(--space-4);
-    font-size: 12px;
-  }
-
   .dictation-tester {
     max-width: none;
     flex: 0 0 auto;
@@ -1730,10 +1658,6 @@ kbd {
   .dictation-tester__header {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .dictation-tester__header > div:last-child {
-    align-self: center;
   }
 
   .dictation-tester__text {

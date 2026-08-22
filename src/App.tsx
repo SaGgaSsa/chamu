@@ -74,7 +74,12 @@ export default function App({ bridge = nativeBridge, forceOnboarding = false }: 
   }
 
   if (!settingsReady || modelLoading) {
-    return <p role="status">Cargando modelo de voz…</p>;
+    return (
+      <div className="model-loading-overlay" role="status" aria-live="polite">
+        <span aria-hidden="true" className="model-loading-overlay__spinner" />
+        <span className="sr-only">Cargando modelo de voz…</span>
+      </div>
+    );
   }
 
   if (!onboardingComplete) {

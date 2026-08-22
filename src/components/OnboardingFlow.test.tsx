@@ -262,7 +262,7 @@ describe("OnboardingFlow", () => {
     continueStep();
     await waitFor(() => expect(bridge.activateModel).toHaveBeenCalledWith("base"));
     expect(callOrder).toContain("activate:base");
-    expect(screen.getByRole("heading", { name: /prueba el dictado/i })).toBeVisible();
+    expect(await screen.findByRole("textbox", { name: /texto de prueba/i })).toBeVisible();
   });
 
   it("unlistens once when a download reports a terminal failure", async () => {
@@ -316,8 +316,7 @@ describe("OnboardingFlow", () => {
 
     expect(bridge.activateModel).toHaveBeenCalledWith("small");
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: /prueba el dictado/i })).toBeVisible());
-    expect(screen.getByRole("textbox", { name: /texto de prueba/i })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /texto de prueba/i })).toBeVisible());
     expect(screen.queryByRole("button", { name: /probar atajo|probar micrófono|probar pegado/i })).toBeNull();
 
     fireEvent.click(screen.getByRole("radio", { name: /pulsar para alternar/i }));
@@ -339,7 +338,7 @@ describe("OnboardingFlow", () => {
 
     await waitFor(() => expect(screen.getByText(/modelo listo/i)).toBeVisible());
     continueStep();
-    await waitFor(() => expect(screen.getByRole("heading", { name: /prueba el dictado/i })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /texto de prueba/i })).toBeVisible());
 
     const select = await waitFor(() => screen.getByRole("combobox", { name: /dispositivo de captura/i }));
     fireEvent.change(select, { target: { value: "front:CARD=S,DEV=0" } });

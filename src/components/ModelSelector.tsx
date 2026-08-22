@@ -29,7 +29,6 @@ export interface ModelSelectorProps {
   selectedModelId: string;
   onModelActivated: (modelId: string) => void;
   disabled?: boolean;
-  heading?: string;
 }
 
 interface DownloadListener {
@@ -97,7 +96,6 @@ export function ModelSelector({
   selectedModelId,
   onModelActivated,
   disabled = false,
-  heading = "Modelo de dictado",
 }: ModelSelectorProps) {
   const [catalog, setCatalog] = useState<ModelMetadata[]>([]);
   const [statuses, setStatuses] = useState<Record<string, ModelStatus>>({});
@@ -408,22 +406,14 @@ export function ModelSelector({
   const selectedStatus = statuses[selectedId];
   const selectorBusy = disabled || downloadId !== null || activatingId !== null;
   const selectedReady = statusIsReady(selectedStatus);
-  const selectedActive = Boolean(selectedStatus?.active);
 
   return (
     <section className="model-selector" aria-label="Selector de modelo">
-      <div className="model-selector__header">
-        <div>
-          <p className="eyebrow">MODELO LOCAL</p>
-          <h2>{heading}</h2>
-        </div>
-        {selectedActive && <span className="model-selector__active">Activo</span>}
-      </div>
       {catalogError && <p className="error-message" role="alert">{catalogError}</p>}
       {catalogValidationError && <p className="error-message" role="alert">{catalogValidationError}</p>}
       {!catalogLoaded && <p className="model-selector__loading" role="status">Cargando catálogo de modelos…</p>}
       <fieldset className="choice-list model-selector__choices" disabled={selectorBusy}>
-        <legend>Perfil de Whisper</legend>
+        <legend>Modelo de dictado</legend>
         {MODEL_PROFILES.map((profile) => {
             const status = statuses[profile.id];
             return (
@@ -437,7 +427,6 @@ export function ModelSelector({
                 />
                 <span>
                   <strong>{profile.label} · {profile.displaySizeMiB} MiB</strong>
-                  <small>{profile.id}</small>
                   <small data-model-status={profile.id}>
                     {statusLabel(profile, status, statusErrors[profile.id], downloadId, downloadProgress, inspectingId)}
                   </small>

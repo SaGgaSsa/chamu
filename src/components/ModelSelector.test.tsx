@@ -154,8 +154,9 @@ describe("ModelSelector", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: /liviano/i }));
     await waitFor(() => expect(bridge.inspectModel).toHaveBeenCalledWith("base"));
-    await waitFor(() => expect(screen.getAllByText("Activo").length).toBeGreaterThan(1));
-    expect(screen.getAllByText("Instalado")[0]).toBeVisible();
+    await waitFor(() => expect(screen.getByText("Instalado")).toBeVisible());
+    expect(screen.getAllByText("Activo")).toHaveLength(1);
+    expect(screen.getAllByText("Activo")[0]).toBeVisible();
   });
 
   it("requires confirmation, reports progress, and does not activate during download", async () => {

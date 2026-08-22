@@ -29,9 +29,9 @@ describe("MicrophoneSelector", () => {
   it("shows the system default when no device is selected", async () => {
     render(<MicrophoneSelector bridge={makeBridge()} onChange={vi.fn()} value="" />);
 
-    expect(screen.getByText(/micrófono actual:/i).parentElement).toHaveTextContent("Micrófono predeterminado del sistema");
     const select = await waitFor(() => screen.getByRole("combobox", { name: /dispositivo de captura/i }));
     expect(select).toHaveValue("");
+    expect(select).toHaveDisplayValue("Micrófono predeterminado del sistema");
     expect(screen.getByRole("option", { name: /predeterminado del sistema/i })).toBeInTheDocument();
   });
 
@@ -63,7 +63,9 @@ describe("MicrophoneSelector", () => {
     });
     render(<MicrophoneSelector bridge={bridge} onChange={vi.fn()} value="front:CARD=S,DEV=0" />);
 
-    expect(await waitFor(() => screen.getByText(/micrófono actual:/i).parentElement)).toHaveTextContent("HyperX QuadCast S");
+    const select = await waitFor(() => screen.getByRole("combobox", { name: /dispositivo de captura/i }));
+    expect(select).toHaveValue("front:CARD=S,DEV=0");
+    expect(select).toHaveDisplayValue("HyperX QuadCast S");
   });
 
   it("allows returning to the system default when only one device is available", async () => {
@@ -103,7 +105,6 @@ describe("MicrophoneSelector", () => {
     render(<MicrophoneSelector bridge={bridge} onChange={onChange} value="front:CARD=missing,DEV=0" />);
 
     const select = await waitFor(() => screen.getByRole("combobox", { name: /dispositivo de captura/i }));
-    expect(screen.getByText(/micrófono actual:/i).parentElement).toHaveTextContent("Micrófono predeterminado del sistema");
     expect(select).toHaveValue("");
     expect(select).toBeEnabled();
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(""));

@@ -9,7 +9,6 @@ import {
   type WaylandHoldShortcutEvent,
   shouldRequestWaylandShortcutConfiguration,
 } from "../native/commands";
-import { PrivacyBadge } from "./PrivacyBadge";
 import { normalizeShortcutForPlatform } from "./ShortcutField";
 import { StatusBubble } from "./StatusBubble";
 import { DictationTester, type DictationTesterHandle } from "./DictationTester";
@@ -565,27 +564,18 @@ export function AppShell({
       <header className="app-header">
         <div className="brand-lockup">
           <span aria-hidden="true" className="brand-mark">◌</span>
-          <div>
-            <h1>Chamu</h1>
-            <p>Tu voz, en tus manos</p>
-          </div>
+          <h1>Chamu</h1>
         </div>
         <div className="header-actions">
           <button className="settings-button" onClick={openSettings} type="button" aria-label="Abrir configuración">
             <SettingsIcon />
-            <span>Configuración</span>
           </button>
         </div>
       </header>
 
       <div className="app-content">
-        <PrivacyBadge />
         <section className="welcome-card" aria-labelledby="welcome-title">
-          <p className="eyebrow">DICTADO LOCAL</p>
           <h2 id="welcome-title">Habla. Chamu escribe.</h2>
-          <p className="welcome-copy">
-            Tu audio se procesa en este equipo y nunca se guarda. Empieza cuando quieras.
-          </p>
           <StatusBubble state={currentRecordingState} />
         </section>
         <DictationTester
@@ -612,21 +602,18 @@ export function AppShell({
       {settingsOpen && (
         <section className="settings-panel" role="dialog" aria-label="Configuración">
           <div className="settings-panel__header">
-            <div>
-              <p className="eyebrow">PREFERENCIAS</p>
-              <h2>Configuración</h2>
-            </div>
+            <h2>Configuración</h2>
             <button className="icon-button" onClick={() => setSettingsOpen(false)} type="button" aria-label="Cerrar configuración"><CloseIcon /></button>
           </div>
           <fieldset className="choice-list">
             <legend>Idioma</legend>
             <label className="choice-card">
               <input checked={draftSettings.language === "es"} name="settings-language" onChange={() => setDraftSettings((current) => ({ ...current, language: "es" }))} type="radio" value="es" />
-              <span><strong>Español</strong><small>Interfaz y dictado en español</small></span>
+              <span><strong>Español</strong></span>
             </label>
             <label className="choice-card">
               <input checked={draftSettings.language === "en"} name="settings-language" onChange={() => setDraftSettings((current) => ({ ...current, language: "en" }))} type="radio" value="en" />
-              <span><strong>English</strong><small>Interfaz y dictado en inglés</small></span>
+              <span><strong>English</strong></span>
             </label>
           </fieldset>
           <ModelSelector
@@ -659,7 +646,6 @@ export function AppShell({
       )}
 
       <footer className="app-footer">
-        <span>Sin cuentas · Sin telemetría · Sin nube</span>
         <span>v0.1.5</span>
       </footer>
     </main>
