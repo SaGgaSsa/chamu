@@ -669,7 +669,7 @@ export function AppShell({
       )}
 
       <footer className="app-footer">
-        <span>v0.1.5</span>
+        <span>v0.1.10</span>
       </footer>
     </main>
   );
