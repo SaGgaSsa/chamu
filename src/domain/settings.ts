@@ -1,5 +1,6 @@
 export type AppLanguage = "es" | "en";
 export type RecordingMode = "hold" | "toggle";
+export type ThreadUsage = "medium" | "max";
 
 export interface AppSettings {
   language: AppLanguage;
@@ -8,6 +9,8 @@ export interface AppSettings {
   modelId: string;
   /** Empty string selects the system default input device. */
   inputDevice: string;
+  /** Medium keeps roughly half of the logical cores free for the system. */
+  threadUsage: ThreadUsage;
 }
 
 export const DEFAULT_SETTINGS: Readonly<AppSettings> = {
@@ -16,6 +19,7 @@ export const DEFAULT_SETTINGS: Readonly<AppSettings> = {
   shortcut: "CommandOrControl+Shift+Space",
   modelId: "small",
   inputDevice: "",
+  threadUsage: "medium",
 };
 
 export function mergeSettings(

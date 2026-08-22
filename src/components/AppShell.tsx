@@ -636,6 +636,29 @@ export function AppShell({
             onChange={(inputDevice) => setDraftSettings((current) => ({ ...current, inputDevice }))}
             value={draftSettings.inputDevice}
           />
+          <fieldset className="choice-list">
+            <legend>Rendimiento</legend>
+            <label className="choice-card">
+              <input
+                checked={draftSettings.threadUsage === "medium"}
+                name="settings-thread-usage"
+                onChange={() => setDraftSettings((current) => ({ ...current, threadUsage: "medium" }))}
+                type="radio"
+                value="medium"
+              />
+              <span><strong>Medio uso</strong><small>Deja núcleos libres para el resto del sistema.</small></span>
+            </label>
+            <label className="choice-card">
+              <input
+                checked={draftSettings.threadUsage === "max"}
+                name="settings-thread-usage"
+                onChange={() => setDraftSettings((current) => ({ ...current, threadUsage: "max" }))}
+                type="radio"
+                value="max"
+              />
+              <span><strong>Máximo uso</strong><small>Dictado más rápido. Usa todos los núcleos.</small></span>
+            </label>
+          </fieldset>
           {settingsError && <p className="error-message">{settingsError}</p>}
           <div className="settings-panel__actions">
             <button className="secondary-button" onClick={() => setSettingsOpen(false)} type="button">Cancelar</button>

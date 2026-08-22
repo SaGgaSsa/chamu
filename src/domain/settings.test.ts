@@ -12,6 +12,7 @@ describe("app settings", () => {
       shortcut: "CommandOrControl+Shift+Space",
       modelId: "small",
       inputDevice: "",
+      threadUsage: "medium",
     });
   });
 
@@ -28,6 +29,7 @@ describe("app settings", () => {
       shortcut: "CommandOrControl+Shift+Space",
       modelId: "small",
       inputDevice: "Micrófono USB",
+      threadUsage: "medium",
     });
   });
 
@@ -35,5 +37,11 @@ describe("app settings", () => {
     const settings = mergeSettings(DEFAULT_SETTINGS, { modelId: "large-v3-turbo-q5_0" });
 
     expect(settings.modelId).toBe("large-v3-turbo-q5_0");
+  });
+
+  it("keeps an explicitly selected CPU usage level when merging settings", () => {
+    const settings = mergeSettings(DEFAULT_SETTINGS, { threadUsage: "max" });
+
+    expect(settings.threadUsage).toBe("max");
   });
 });

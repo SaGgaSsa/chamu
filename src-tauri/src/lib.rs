@@ -730,9 +730,14 @@ fn warm_whisper_context(
 fn transcribe_with_embedded_whisper(
     context: &WhisperContext,
     language: &str,
+    thread_count: i32,
     samples: &mut [i16],
 ) -> Result<String, String> {
-    let mut audio: Vec<f32> = samples
+    let voiced = trim_silence(samples, SILENCE_PEAK_THRESHOLD);
+    if voiced.len() < MIN_VOICED_SAMPLES {
+        return Err("No se detectó voz en la grabación".into());
+    }
+    let mut audio: Vec<f32> = voiced
         .iter()
         .map(|sample| f32::from(*sample) / f32::from(i16::MAX))
         .collect();
@@ -741,12 +746,8 @@ fn transcribe_with_embedded_whisper(
         let mut state = context
             .create_state()
             .map_err(|error| format!("No se pudo preparar whisper.cpp: {error}"))?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
-        let thread_count = std::thread::available_parallelism()
-            .map(|parallelism| parallelism.get() as i32)
-            .unwrap_or(4);
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(thread_count);
-        eprintln!("Whisper inference using {} threads", thread_count);
         params.set_language(Some(language));
         params.set_translate(false);
         params.set_print_special(false);
@@ -773,7 +774,38 @@ fn transcribe_with_embedded_whisper(
 
 struct TranscriptionWork {
     language: String,
+    thread_count: i32,
     samples: Vec<i16>,
+}
+
+/// Resolves the whisper worker threads from the configured CPU usage level.
+fn inference_thread_count(thread_usage: &str) -> i32 {
+    let total = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(4);
+    match thread_usage {
+        "max" => total as i32,
+        // "medium" keeps roughly half of the logical cores free for the system.
+        _ => ((total + 1) / 2).max(1) as i32,
+    }
+}
+
+/// Peak amplitude treated as silence. Roughly 1% of the i16 range.
+const SILENCE_PEAK_THRESHOLD: i16 = 327;
+
+/// Shortest voiced span accepted for transcription. 100 ms at 16 kHz.
+const MIN_VOICED_SAMPLES: usize = 1600;
+
+fn trim_silence(samples: &[i16], peak_threshold: i16) -> &[i16] {
+    let is_voiced = |sample: &i16| sample.abs() > peak_threshold;
+    let Some(start) = samples.iter().position(is_voiced) else {
+        return &[];
+    };
+    let end = samples
+        .iter()
+        .rposition(is_voiced)
+        .expect("voiced sample exists");
+    &samples[start..=end]
 }
 
 impl Drop for TranscriptionWork {
@@ -790,7 +822,12 @@ fn transcribe_work(
         if work.samples.is_empty() {
             return Err("No se capturó audio; revisa el permiso del micrófono".into());
         }
-        let text = transcribe_with_embedded_whisper(&context, &work.language, &mut work.samples)?;
+        let text = transcribe_with_embedded_whisper(
+            &context,
+            &work.language,
+            work.thread_count,
+            &mut work.samples,
+        )?;
         if text.is_empty() {
             return Err("whisper.cpp no devolvió texto".into());
         }
@@ -930,7 +967,7 @@ fn recover_dictation_after_error(state: &RuntimeState) {
 async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResult, String> {
     let mut capture_extracted = false;
     let result = async {
-        let (capture, model_id, language) = {
+        let (capture, model_id, language, thread_count) = {
             let _model_operation = state
                 .model_activation
                 .try_lock()
@@ -943,7 +980,7 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
                 .ok_or_else(|| "No hay un dictado en curso".to_string())?;
             capture_extracted = true;
 
-            let (model_id, language) = state
+            let (model_id, language, thread_count) = state
                 .settings
                 .lock()
                 .map_err(|_| "No se pudo leer la configuración".to_string())
@@ -953,14 +990,15 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
                         _ => "es",
                     }
                     .to_string();
-                    (settings.model_id.clone(), language)
+                    let thread_count = inference_thread_count(&settings.thread_usage);
+                    (settings.model_id.clone(), language, thread_count)
                 })?;
             state
                 .recording
                 .lock()
                 .map_err(|_| "No se pudo actualizar el estado".to_string())?
                 .stop_without_audio()?;
-            (capture, model_id, language)
+            (capture, model_id, language, thread_count)
         };
 
         let whisper_context = Arc::clone(&state.whisper_context);
@@ -982,7 +1020,11 @@ async fn stop_dictation(state: State<'_, RuntimeState>) -> Result<DictationResul
                     )?
                 }
             };
-            let work = TranscriptionWork { language, samples };
+            let work = TranscriptionWork {
+                language,
+                thread_count,
+                samples,
+            };
             transcribe_work(work, context)
         })
         .await
@@ -1836,6 +1878,9 @@ where
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev builds compile whisper.cpp with -DWHISPER_DEBUG. The hooks absorb the
+    // native per-token trace; release builds stay quiet by themselves.
+    whisper_rs::install_logging_hooks();
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1942,6 +1987,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_silence_keeps_only_the_voiced_span() {
+        let samples = vec![0; 100]
+            .into_iter()
+            .chain([500, -900, 120])
+            .chain(vec![0; 100])
+            .collect::<Vec<i16>>();
+        assert_eq!(trim_silence(&samples, 327), &[500, -900]);
+    }
+
+    #[test]
+    fn trim_silence_returns_empty_for_pure_silence() {
+        let samples = vec![0_i16, 10, -10, 327, -327];
+        assert!(trim_silence(&samples, 327).is_empty());
+    }
 
     #[test]
     fn configured_capture_device_uses_the_platform_capture_policy() {
@@ -2106,11 +2167,24 @@ mod tests {
     fn transcription_work_owns_language_and_audio() {
         let work = TranscriptionWork {
             language: "es".to_string(),
+            thread_count: 4,
             samples: vec![1, -2, 3],
         };
 
         assert_eq!(work.language, "es");
         assert_eq!(work.samples, vec![1, -2, 3]);
+    }
+
+    #[test]
+    fn inference_thread_count_follows_the_configured_usage_level() {
+        let total = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(4);
+        let medium = ((total + 1) / 2).max(1);
+
+        assert_eq!(inference_thread_count("max"), total as i32);
+        assert_eq!(inference_thread_count("medium"), medium as i32);
+        assert_eq!(inference_thread_count("desconocido"), medium as i32);
     }
 
     #[test]

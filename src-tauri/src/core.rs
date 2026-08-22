@@ -52,10 +52,16 @@ pub struct AppSettings {
     pub model_id: String,
     #[serde(default)]
     pub input_device: String,
+    #[serde(default = "default_thread_usage")]
+    pub thread_usage: String,
 }
 
 fn legacy_model_id() -> String {
     "base".into()
+}
+
+fn default_thread_usage() -> String {
+    "medium".into()
 }
 
 /// Clears persisted device selections on Linux because the ALSA names exposed
@@ -78,6 +84,7 @@ impl Default for AppSettings {
             shortcut: "CommandOrControl+Shift+Space".into(),
             model_id: "small".into(),
             input_device: String::new(),
+            thread_usage: default_thread_usage(),
         }
     }
 }
@@ -103,6 +110,9 @@ pub fn validate_settings(settings: &AppSettings) -> Result<(), String> {
     }
     if settings.input_device.len() > 200 {
         return Err("El nombre del micrófono es demasiado largo".into());
+    }
+    if !matches!(settings.thread_usage.as_str(), "medium" | "max") {
+        return Err("Nivel de uso de CPU no válido".into());
     }
     Ok(())
 }
@@ -1333,6 +1343,7 @@ mod tests {
             shortcut: "Ctrl+Space".into(),
             model_id: "small".into(),
             input_device: "Micrófono USB".into(),
+            thread_usage: "medium".into(),
         };
 
         save_settings_file(&path, &expected).expect("save settings");
@@ -1345,6 +1356,7 @@ mod tests {
         assert_eq!(loaded.mode, expected.mode);
         assert_eq!(loaded.shortcut, expected.shortcut);
         assert_eq!(loaded.model_id, expected.model_id);
+        assert_eq!(loaded.thread_usage, expected.thread_usage);
         assert!(validate_settings(&AppSettings {
             language: "fr".into(),
             ..expected.clone()
@@ -1352,9 +1364,35 @@ mod tests {
         .is_err());
         assert!(validate_settings(&AppSettings {
             input_device: "x".repeat(201),
+            ..expected.clone()
+        })
+        .is_err());
+        assert!(validate_settings(&AppSettings {
+            thread_usage: "turbo".into(),
             ..expected
         })
         .is_err());
+    }
+
+    #[test]
+    fn settings_without_thread_usage_default_to_medium_usage() {
+        let root = test_root("thread-usage-default");
+        let path = root.join("settings.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "language": "es",
+                "mode": "hold",
+                "shortcut": "Ctrl+Space",
+                "modelId": "small",
+                "inputDevice": ""
+            })
+            .to_string(),
+        )
+        .expect("write legacy settings");
+
+        let loaded = load_settings_file(&path).expect("load legacy settings");
+        assert_eq!(loaded.thread_usage, "medium");
     }
 
     #[cfg(target_os = "linux")]
